@@ -37,6 +37,15 @@
       "limit": 1000
     },
     {
+      "name": "oracle-dev",
+      "driver": "oracle",
+      "host": "localhost",
+      "port": 1521,
+      "user": "app",
+      "password": "${ORACLE_PASSWORD}",
+      "database": "FREEPDB1"
+    },
+    {
       "name": "notes",
       "driver": "sqlite",
       "path": "~/data/notes.db"

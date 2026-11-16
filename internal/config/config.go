@@ -16,17 +16,20 @@ const (
 	Postgres = "postgres"
 	MySQL    = "mysql"
 	SQLite   = "sqlite"
+	Oracle   = "oracle"
 )
 
 type Profile struct {
 	Name     string `json:"name"`
-	Driver   string `json:"driver"`             // postgres, mysql or sqlite
+	Driver   string `json:"driver"`             // postgres, mysql, oracle or sqlite
 	URL      string `json:"url,omitempty"`      // full connection URL/DSN instead of the fields below; supports ${ENV_VAR}
 	Host     string `json:"host,omitempty"`     // defaults to localhost
 	Port     int    `json:"port,omitempty"`     // defaults to 5432 / 3306
 	User     string `json:"user,omitempty"`     // supports ${ENV_VAR}
 	Password string `json:"password,omitempty"` // supports ${ENV_VAR}
-	Database string `json:"database,omitempty"`
+	Database string `json:"database,omitempty"` // oracle: the service name, or the SID with "sid": true
+	SID      bool   `json:"sid,omitempty"`      // oracle: database is a SID, not a service name
+	Role     string `json:"role,omitempty"`     // oracle: log on as sysdba or sysoper
 	Schema   string `json:"schema,omitempty"`   // optional: open this schema directly
 	SSLMode  string `json:"sslMode,omitempty"`  // postgres sslmode / mysql tls (e.g. require, disable)
 	Path     string `json:"path,omitempty"`     // sqlite database file
@@ -106,14 +109,16 @@ func Load(path string) (*Settings, error) {
 			p.Driver = MySQL
 		case "sqlite3":
 			p.Driver = SQLite
-		case Postgres, MySQL, SQLite:
+		case "oracle_thin", "ora":
+			p.Driver = Oracle
+		case Postgres, MySQL, SQLite, Oracle:
 		case "":
 			// an entry that only sets flags for a linked (DBeaver) connection
 			if p.URL != "" || p.Host != "" || p.Path != "" {
-				return nil, fmt.Errorf("profile %q: driver missing (postgres, mysql, sqlite)", p.Name)
+				return nil, fmt.Errorf("profile %q: driver missing (postgres, mysql, oracle, sqlite)", p.Name)
 			}
 		default:
-			return nil, fmt.Errorf("profile %q: unknown driver %q (postgres, mysql, sqlite)", p.Name, p.Driver)
+			return nil, fmt.Errorf("profile %q: unknown driver %q (postgres, mysql, oracle, sqlite)", p.Name, p.Driver)
 		}
 		p.URL = expand(p.Name, p.URL)
 		p.Host = expand(p.Name, p.Host)

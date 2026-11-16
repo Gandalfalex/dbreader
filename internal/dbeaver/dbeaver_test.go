@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"dbreader/internal/config"
@@ -67,8 +68,29 @@ func workspace(t *testing.T) (root, project string) {
 					"handlers": {"ssh_tunnel": {"type": "SSH", "enabled": true, "properties": {"host": "bastion"}}}}
 			},
 			"oracle_thin-5": {
-				"provider": "oracle", "driver": "oracle_thin", "name": "legacy",
-				"configuration": {"host": "ora", "port": "1521", "database": "ORCL"}
+				"provider": "oracle", "driver": "oracle_thin", "name": "ora service",
+				"configuration": {"host": "ora.example.com", "port": "1521", "database": "FREEPDB1",
+					"url": "jdbc:oracle:thin:@//ora.example.com:1521/FREEPDB1", "user": "app"}
+			},
+			"oracle_thin-6": {
+				"provider": "oracle", "driver": "oracle_thin", "name": "ora sid",
+				"configuration": {"host": "old", "port": "1522", "database": "ORCL", "url": "jdbc:oracle:thin:@old:1522:ORCL"}
+			},
+			"oracle_thin-7": {
+				"provider": "oracle", "driver": "oracle_thin", "name": "ora tns",
+				"configuration": {"url": "jdbc:oracle:thin:@(DESCRIPTION=(ADDRESS=(PROTOCOL=TCPS)(HOST=secure.example.com)(PORT=2484))(CONNECT_DATA=(SERVICE_NAME=PROD.example.com)))"}
+			},
+			"oracle_thin-8": {
+				"provider": "oracle", "driver": "oracle_thin", "name": "ora alias",
+				"configuration": {"url": "jdbc:oracle:thin:@PRODDB"}
+			},
+			"oracle_thin-10": {
+				"provider": "oracle", "driver": "oracle_thin", "name": "ora wallet",
+				"configuration": {"url": "jdbc:oracle:thin:@//h:1521/s", "auth-model": "oracle_wallet"}
+			},
+			"mssql-9": {
+				"provider": "sqlserver", "driver": "microsoft", "name": "legacy",
+				"configuration": {"host": "sql", "port": "1433", "database": "x"}
 			}
 		}
 	}`))
@@ -105,8 +127,8 @@ func TestLoad(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Load(%s): %v", dir, err)
 		}
-		if len(ws.Profiles) != 4 {
-			t.Fatalf("Load(%s): %d profiles, want 4", dir, len(ws.Profiles))
+		if len(ws.Profiles) != 9 {
+			t.Fatalf("Load(%s): %d profiles, want 9", dir, len(ws.Profiles))
 		}
 	}
 
@@ -152,10 +174,27 @@ func TestLoad(t *testing.T) {
 	if lite := by["local file"]; lite.Driver != config.SQLite || lite.Path != "/data/app.db" || lite.Password != "" {
 		t.Errorf("sqlite = %+v", lite)
 	}
+	svc := by["ora service"]
+	if svc.Driver != config.Oracle || svc.Host != "ora.example.com" || svc.Port != 1521 || svc.Database != "FREEPDB1" || svc.SID || svc.Blocked != "" {
+		t.Errorf("oracle service = %+v", svc)
+	}
+	if sid := by["ora sid"]; sid.Driver != config.Oracle || sid.Host != "old" || sid.Port != 1522 || sid.Database != "ORCL" || !sid.SID {
+		t.Errorf("oracle sid = %+v", sid)
+	}
+	if tns := by["ora tns"]; tns.Host != "secure.example.com" || tns.Port != 2484 || tns.Database != "PROD.example.com" || tns.SID || tns.SSLMode != "require" || tns.Blocked != "" {
+		t.Errorf("oracle tns descriptor = %+v", tns)
+	}
+	// a bare TNS alias needs tnsnames.ora: listed, but not openable, and it says why
+	if alias := by["ora alias"]; alias.Blocked == "" {
+		t.Errorf("oracle tns alias not blocked: %+v", alias)
+	}
+	if w := by["ora wallet"]; !strings.Contains(w.Blocked, "oracle_wallet") {
+		t.Errorf("wallet logon not blocked: %+v", w)
+	}
 	if ssh := by["behind bastion"]; ssh.Blocked == "" {
 		t.Errorf("ssh tunnel connection not blocked: %+v", ssh)
 	}
-	if len(ws.Skipped) != 1 || ws.Skipped[0] != "legacy (oracle)" {
+	if len(ws.Skipped) != 1 || ws.Skipped[0] != "legacy (sqlserver)" {
 		t.Errorf("skipped = %v", ws.Skipped)
 	}
 	if got := names(ws.Scripts); len(got) != 2 || got[0] != "scratch.sql" || got[1] != "gone.sql" {
@@ -175,8 +214,8 @@ func TestUnreadableCredentials(t *testing.T) {
 			t.Errorf("%s has a password without readable credentials", p.Name)
 		}
 	}
-	if len(ws.Profiles) != 4 {
-		t.Errorf("profiles = %d, want 4", len(ws.Profiles))
+	if len(ws.Profiles) != 9 {
+		t.Errorf("profiles = %d, want 9", len(ws.Profiles))
 	}
 }
 

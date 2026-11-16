@@ -169,7 +169,7 @@ func (m *model) handlePromptKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *model) search(text string) tea.Cmd {
 	if m.top() == scrData {
 		b := *m.grid.browse
-		b.Search, b.SearchCols = text, m.grid.res.Columns
+		b.Search, b.SearchCols = text, m.searchColumns(b.Table, m.grid.res.Columns)
 		return m.browse(b)
 	}
 	if text == "" {
@@ -197,7 +197,7 @@ func (m *model) startGrep(text string) tea.Cmd {
 		tables = append(tables, e.Key)
 	}
 	ctx := m.newOp("searching " + strconv.Itoa(len(tables)) + " tables")
-	gen, conn, schema, cols := op(m.gen), m.conn, m.schema, m.colNames
+	gen, conn, schema, cols := op(m.gen), m.conn, m.schema, m.searchCols
 	m.grep, m.grepText, m.grepSeen, m.grepFailed = listState{}, text, 0, 0
 	m.push(scrGrep)
 
@@ -262,7 +262,18 @@ func (m *model) grepResult(msg grepMsg) tea.Cmd {
 
 // openGrepHit shows the matching rows of a table from the search results.
 func (m *model) openGrepHit(table string) tea.Cmd {
-	return m.browse(db.Browse{Schema: m.schema, Table: table, Search: m.grepText, SearchCols: m.colNames[table]})
+	return m.browse(db.Browse{Schema: m.schema, Table: table, Search: m.grepText, SearchCols: m.searchColumns(table, nil)})
+}
+
+// searchColumns returns the columns of table that text can be searched in,
+// falling back to all the columns shown when the catalog has not loaded.
+func (m *model) searchColumns(table string, shown []string) []string {
+	if m.colSchema == m.schema && m.searchCols != nil {
+		if cols, ok := m.searchCols[table]; ok {
+			return cols
+		}
+	}
+	return shown
 }
 
 // ---- yanking results ----

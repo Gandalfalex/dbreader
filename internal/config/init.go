@@ -94,6 +94,7 @@ func Overlay(own, linked Profile) Profile {
 	if own.URL != "" || own.Host != "" || own.Path != "" {
 		out.Driver, out.URL, out.Host, out.Port = own.Driver, own.URL, own.Host, own.Port
 		out.Database, out.Path, out.SSLMode = own.Database, own.Path, own.SSLMode
+		out.SID, out.Role = own.SID, own.Role
 		out.Blocked = ""
 	}
 	if own.User != "" {

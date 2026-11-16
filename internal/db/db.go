@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	go_ora "github.com/sijms/go-ora/v2"
+
 	"dbreader/internal/config"
 	"dbreader/internal/sqlsafe"
 )
@@ -88,6 +90,20 @@ func (c *Conn) HasSchemas() bool { return c.d.schemas != "" }
 // read runs fn on a connection that cannot change data: a READ ONLY
 // transaction on PostgreSQL and MySQL, query_only on SQLite.
 func (c *Conn) read(ctx context.Context, fn func(q querier) error) error {
+	for attempt := 0; ; attempt++ {
+		err := c.readOnce(ctx, fn)
+		if err == nil || c.d.retry == nil || !c.d.retry(err) || attempt >= 3 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func (c *Conn) readOnce(ctx context.Context, fn func(q querier) error) error {
 	if c.d.queryOnly {
 		conn, err := c.db.Conn(ctx)
 		if err != nil {
@@ -105,7 +121,17 @@ func (c *Conn) read(ctx context.Context, fn func(q querier) error) error {
 		}()
 		return fn(conn)
 	}
-	tx, err := c.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	var tx *sql.Tx
+	var err error
+	if c.d.readTx != "" { // the driver cannot ask for a read-only transaction
+		if tx, err = c.db.BeginTx(ctx, nil); err == nil {
+			if _, err = tx.ExecContext(ctx, c.d.readTx); err != nil {
+				tx.Rollback()
+			}
+		}
+	} else {
+		tx, err = c.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	}
 	if err != nil {
 		return err
 	}
@@ -119,9 +145,15 @@ type querier interface {
 
 // Query runs a statement read-only and returns at most limit rows.
 func (c *Conn) Query(ctx context.Context, query string, limit int, args ...any) (*Result, error) {
+	if c.d.guardReads {
+		if st := sqlsafe.Classify(query, c.d.safe); st.Kind != sqlsafe.Read {
+			return nil, fmt.Errorf("refused on the read path: %s", st.Reason)
+		}
+	}
 	res := &Result{}
 	start := time.Now()
 	err := c.read(ctx, func(q querier) error {
+		res.Rows, res.Truncated = nil, false // a retry starts over
 		rows, err := q.QueryContext(ctx, query, args...)
 		if err != nil {
 			return err
@@ -135,7 +167,7 @@ func (c *Conn) Query(ctx context.Context, query string, limit int, args ...any) 
 			return err
 		}
 		for _, t := range types {
-			res.Types = append(res.Types, strings.ToUpper(t.DatabaseTypeName()))
+			res.Types = append(res.Types, typeName(t.DatabaseTypeName()))
 		}
 		vals := make([]any, len(res.Columns))
 		ptrs := make([]any, len(vals))
@@ -152,7 +184,7 @@ func (c *Conn) Query(ctx context.Context, query string, limit int, args ...any) 
 			}
 			row := make([]Cell, len(vals))
 			for i, v := range vals {
-				row[i] = format(v, res.Types[i])
+				row[i] = format(v, res.Types[i], c.d.dateHasTime)
 			}
 			res.Rows = append(res.Rows, row)
 		}
@@ -266,9 +298,11 @@ func (c *Conn) Tables(ctx context.Context, schema string) ([]Table, error) {
 		defer rows.Close()
 		for rows.Next() {
 			var t Table
-			if err := rows.Scan(&t.Name, &t.Kind, &t.Rows); err != nil {
+			var n float64 // Oracle returns NUMBER as a float or a string
+			if err := rows.Scan(&t.Name, &t.Kind, &n); err != nil {
 				return err
 			}
+			t.Rows = int64(n)
 			out = append(out, t)
 		}
 		return rows.Err()
@@ -286,9 +320,11 @@ func (c *Conn) Columns(ctx context.Context, schema, table string) ([]Column, err
 		defer rows.Close()
 		for rows.Next() {
 			var col Column
-			if err := rows.Scan(&col.Name, &col.Type, &col.Nullable, &col.Default, &col.PK); err != nil {
+			var def sql.NullString // Oracle has no empty string, only NULL
+			if err := rows.Scan(&col.Name, &col.Type, &col.Nullable, &def, &col.PK); err != nil {
 				return err
 			}
+			col.Default = strings.TrimSpace(def.String)
 			out = append(out, col)
 		}
 		return rows.Err()
@@ -298,9 +334,22 @@ func (c *Conn) Columns(ctx context.Context, schema, table string) ([]Column, err
 
 // ColumnNames returns the columns of every table in schema, for completion.
 func (c *Conn) ColumnNames(ctx context.Context, schema string) (map[string][]string, error) {
+	return c.columnNames(ctx, c.d.colNames, schema)
+}
+
+// SearchColumns is ColumnNames without the columns text cannot be searched
+// in, such as LOBs and raw bytes.
+func (c *Conn) SearchColumns(ctx context.Context, schema string) (map[string][]string, error) {
+	if c.d.searchNames == "" {
+		return c.ColumnNames(ctx, schema)
+	}
+	return c.columnNames(ctx, c.d.searchNames, schema)
+}
+
+func (c *Conn) columnNames(ctx context.Context, query, schema string) (map[string][]string, error) {
 	out := map[string][]string{}
 	err := c.read(ctx, func(q querier) error {
-		rows, err := q.QueryContext(ctx, c.d.colNames, c.d.args(schema)...)
+		rows, err := q.QueryContext(ctx, query, c.d.args(schema)...)
 		if err != nil {
 			return err
 		}
@@ -349,7 +398,10 @@ func (c *Conn) SelectSQL(b Browse) string {
 			s.WriteString(" DESC")
 		}
 	}
-	if b.Limit > 0 {
+	switch {
+	case b.Limit > 0 && c.d.rownum:
+		return "SELECT * FROM (" + s.String() + ") WHERE ROWNUM <= " + strconv.Itoa(b.Limit+1)
+	case b.Limit > 0:
 		s.WriteString(" LIMIT " + strconv.Itoa(b.Limit+1))
 	}
 	return s.String()
@@ -382,8 +434,13 @@ func (c *Conn) CountMatches(ctx context.Context, schema, table string, cols []st
 	if len(cols) == 0 {
 		return 0, nil
 	}
-	res, err := c.Query(ctx, fmt.Sprintf("SELECT count(*) FROM (SELECT 1 FROM %s WHERE %s LIMIT %d) AS m",
-		c.Qualified(schema, table), c.SearchCond(cols, text), limit), 1)
+	query := fmt.Sprintf("SELECT count(*) FROM (SELECT 1 FROM %s WHERE %s LIMIT %d) AS m",
+		c.Qualified(schema, table), c.SearchCond(cols, text), limit)
+	if c.d.rownum {
+		query = fmt.Sprintf("SELECT count(*) FROM (SELECT 1 FROM %s WHERE %s AND ROWNUM <= %d)",
+			c.Qualified(schema, table), c.SearchCond(cols, text), limit)
+	}
+	res, err := c.Query(ctx, query, 1)
 	if err != nil {
 		return 0, err
 	}
@@ -403,10 +460,26 @@ func (c *Conn) Qualified(schema, table string) string {
 	return c.Quote(schema) + "." + c.Quote(table)
 }
 
-func format(v any, typ string) Cell {
+func format(v any, typ string, dateHasTime bool) Cell {
 	switch v := v.(type) {
 	case nil:
 		return Cell{Null: true}
+	case go_ora.Clob: // Oracle LOBs arrive as structs
+		return lobCell(v.String, v.Valid)
+	case go_ora.NClob:
+		return lobCell(v.String, v.Valid)
+	case go_ora.Blob:
+		if !v.Valid && v.Data == nil {
+			return Cell{Null: true}
+		}
+		return format(v.Data, typ, dateHasTime)
+	case go_ora.TimeStamp:
+		return format(time.Time(v), "TIMESTAMP", dateHasTime)
+	case go_ora.TimeStampTZ:
+		return format(time.Time(v), "TIMESTAMPTZ", dateHasTime)
+	case go_ora.Number:
+		str, _ := v.String()
+		return Cell{S: str}
 	case []byte:
 		if utf8.Valid(v) {
 			return Cell{S: string(v)}
@@ -419,10 +492,10 @@ func format(v any, typ string) Cell {
 	case string:
 		return Cell{S: v}
 	case time.Time:
-		if typ == "DATE" {
+		if typ == "DATE" && !dateHasTime {
 			return Cell{S: v.Format("2006-01-02")}
 		}
-		if strings.Contains(typ, "TZ") {
+		if strings.Contains(typ, "TZ") || strings.Contains(typ, "TIME ZONE") {
 			return Cell{S: v.Format("2006-01-02 15:04:05.999999 Z07:00")}
 		}
 		return Cell{S: v.Format("2006-01-02 15:04:05.999999")}
@@ -432,4 +505,29 @@ func format(v any, typ string) Cell {
 		return Cell{S: strconv.FormatFloat(float64(v), 'g', -1, 32)}
 	}
 	return Cell{S: fmt.Sprint(v)}
+}
+
+func lobCell(s string, valid bool) Cell {
+	if !valid && s == "" {
+		return Cell{Null: true}
+	}
+	return Cell{S: s}
+}
+
+// driverTypes maps type names the Oracle driver reports in its own
+// spelling to the ones Oracle users know.
+var driverTypes = map[string]string{
+	"TIMESTAMPDTY": "TIMESTAMP", "TIMESTAMPTZ_DTY": "TIMESTAMP WITH TIME ZONE", "TIMESTAMPLTZ_DTY": "TIMESTAMP WITH LOCAL TIME ZONE",
+	"TIMESTAMPELTZ": "TIMESTAMP WITH LOCAL TIME ZONE", "TIMESTAMPETZ": "TIMESTAMP WITH TIME ZONE",
+	"INTERVALDS_DTY": "INTERVAL DAY TO SECOND", "INTERVALYM_DTY": "INTERVAL YEAR TO MONTH",
+	"IBDOUBLE": "BINARY_DOUBLE", "IBFLOAT": "BINARY_FLOAT", "NCHAR": "VARCHAR2", "LONGVARCHAR": "CLOB",
+	"OCICLOBLOCATOR": "CLOB", "OCIBLOBLOCATOR": "BLOB", "OCIFILELOCATOR": "BFILE", "LONGRAW": "LONG RAW",
+}
+
+func typeName(driver string) string {
+	up := strings.ToUpper(driver)
+	if name, ok := driverTypes[up]; ok {
+		return name
+	}
+	return up
 }

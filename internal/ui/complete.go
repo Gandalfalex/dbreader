@@ -17,7 +17,30 @@ type sqlCatalog struct {
 	schemas []string
 	columns map[string][]string // table → column names
 	quote   func(string) string
-	foldsUp bool // unquoted upper case is not preserved (PostgreSQL folds to lower)
+	fold    foldRule
+}
+
+// foldRule is how a server reads unquoted identifiers, which decides which
+// names need quotes.
+type foldRule int
+
+const (
+	foldNone  foldRule = iota // names are used as written
+	foldLower                 // unquoted names become lower case (PostgreSQL)
+	foldUpper                 // unquoted names become upper case (Oracle)
+)
+
+// needsQuote reports whether name must be quoted to mean itself.
+func (r foldRule) needsQuote(name string) bool {
+	switch {
+	case !plainIdent.MatchString(name) && !(r == foldUpper && oracleIdent.MatchString(name)):
+		return true
+	case r == foldLower:
+		return hasUpperRun.MatchString(name)
+	case r == foldUpper:
+		return name != strings.ToUpper(name)
+	}
+	return false
 }
 
 var sqlKeywords = strings.Fields(`SELECT FROM WHERE AND OR NOT NULL IS IN LIKE ILIKE BETWEEN ORDER BY GROUP
@@ -43,6 +66,7 @@ var (
 	sqlToken    = regexp.MustCompile(`[\pL_][\pL\pN_$]*|[.,]`)
 	plainIdent  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	hasUpperRun = regexp.MustCompile(`[A-Z]`)
+	oracleIdent = regexp.MustCompile(`^[A-Z][A-Z0-9_$#]*$`)
 )
 
 func isIdentRune(r rune) bool {
@@ -93,7 +117,7 @@ func completeWord(text string, cursor int, cat sqlCatalog) (items []cmdline.Item
 		}
 		seen[name] = true
 		ins := name
-		if !raw && (!plainIdent.MatchString(name) || (cat.foldsUp && hasUpperRun.MatchString(name))) {
+		if !raw && cat.fold.needsQuote(name) {
 			ins = cat.quote(name)
 		}
 		items = append(items, cmdline.Item{Value: ins, Label: name, Desc: desc})

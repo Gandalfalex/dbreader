@@ -63,7 +63,7 @@ func newGrid(res *db.Result, sql string, browse *db.Browse) grid {
 }
 
 func isNumeric(typ string) bool {
-	for _, t := range []string{"INT", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE", "REAL", "SERIAL", "MONEY"} {
+	for _, t := range []string{"INT", "NUMBER", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE", "REAL", "SERIAL", "MONEY"} {
 		if strings.Contains(typ, t) {
 			return true
 		}

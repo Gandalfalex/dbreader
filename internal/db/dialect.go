@@ -6,9 +6,11 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	go_ora "github.com/sijms/go-ora/v2"
 	_ "modernc.org/sqlite"
 
 	"dbreader/internal/config"
@@ -31,6 +33,24 @@ type dialect struct {
 	colNames  string // table and column name of every column in a schema, in order
 	contains  string // "%s contains the pattern %s" for a column of any type, ignoring case
 	backslash bool   // backslash escapes inside string literals
+
+	// searchNames is colNames restricted to columns text can be searched in;
+	// "" when all of them can.
+	searchNames string
+	// readTx is run first in a read-only transaction when the driver has no
+	// read-only option of its own.
+	readTx string
+	// rownum limits rows with ROWNUM (all Oracle versions) instead of LIMIT.
+	rownum bool
+	// dateHasTime: DATE columns carry a time of day (Oracle).
+	dateHasTime bool
+	// guardReads: the server's read-only transaction does not stop everything
+	// (Oracle runs DDL in it after committing), so Query refuses any statement
+	// that is not plainly a read.
+	guardReads bool
+	// retry reports errors that go away when the read is repeated a moment
+	// later, e.g. Oracle's ORA-01466 for a table changed within the last second.
+	retry func(error) bool
 }
 
 func all(a ...string) []any {
@@ -85,6 +105,46 @@ var dialects = map[string]dialect{
 		colNames: `SELECT table_name, column_name FROM information_schema.columns
 			WHERE table_schema = ? ORDER BY table_name, ordinal_position`,
 	},
+	config.Oracle: {
+		driver: "oracle", safe: sqlsafe.Oracle, quote: '"', dsn: oracleDSN, args: all,
+		readTx: "SET TRANSACTION READ ONLY", rownum: true, dateHasTime: true, guardReads: true,
+		retry:    func(err error) bool { return strings.Contains(err.Error(), "ORA-01466") },
+		contains: `UPPER(%s) LIKE UPPER(%s) ESCAPE '!'`,
+		schemas:  `SELECT username FROM all_users ORDER BY CASE WHEN username IN (` + oracleSystem + `) THEN 1 ELSE 0 END, username`,
+		current:  `SELECT sys_context('USERENV', 'CURRENT_SCHEMA') FROM dual`,
+		tables: `SELECT o.object_name, lower(o.object_type), nvl(t.num_rows, -1)
+			FROM all_objects o
+			LEFT JOIN all_tables t ON t.owner = o.owner AND t.table_name = o.object_name
+			WHERE o.owner = :1 AND o.object_name NOT LIKE 'BIN$%'
+				AND (o.object_type IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW')
+					OR (o.object_type = 'SYNONYM' AND EXISTS (
+						SELECT 1 FROM all_synonyms s
+						JOIN all_objects x ON x.owner = s.table_owner AND x.object_name = s.table_name
+						WHERE s.owner = o.owner AND s.synonym_name = o.object_name
+							AND x.object_type IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW'))))
+			ORDER BY o.object_name`,
+		// a synonym shows the columns of the table it stands for
+		columns: `WITH a AS (SELECT CAST(:1 AS VARCHAR2(128)) o, CAST(:2 AS VARCHAR2(128)) t FROM dual),
+			r AS (SELECT o, t FROM a UNION ALL
+				SELECT s.table_owner, s.table_name FROM all_synonyms s JOIN a ON s.owner = a.o AND s.synonym_name = a.t)
+			SELECT c.column_name,
+				c.data_type || CASE
+					WHEN c.data_type LIKE '%CHAR%' AND c.char_length > 0 THEN '(' || c.char_length || ')'
+					WHEN c.data_type = 'NUMBER' AND c.data_precision IS NOT NULL THEN
+						'(' || c.data_precision || CASE WHEN nvl(c.data_scale, 0) > 0 THEN ',' || c.data_scale END || ')'
+				END,
+				CASE c.nullable WHEN 'Y' THEN 1 ELSE 0 END,
+				c.data_default,
+				CASE WHEN EXISTS (
+					SELECT 1 FROM all_constraints k
+					JOIN all_cons_columns cc ON cc.owner = k.owner AND cc.constraint_name = k.constraint_name
+					WHERE k.constraint_type = 'P' AND k.owner = c.owner AND k.table_name = c.table_name
+						AND cc.column_name = c.column_name) THEN 1 ELSE 0 END
+			FROM all_tab_columns c JOIN r ON c.owner = r.o AND c.table_name = r.t ORDER BY c.column_id`,
+		colNames: oracleColNames(""),
+		searchNames: oracleColNames(`AND c.data_type_owner IS NULL
+			AND c.data_type NOT IN ('BLOB', 'RAW', 'LONG RAW', 'LONG', 'BFILE', 'XMLTYPE', 'ANYDATA', 'ROWID', 'UROWID')`),
+	},
 	config.SQLite: {
 		driver: "sqlite", safe: sqlsafe.SQLite, quote: '"', queryOnly: true, dsn: sqliteDSN,
 		contains: `CAST(%s AS TEXT) LIKE %s ESCAPE '!'`,
@@ -97,6 +157,28 @@ var dialects = map[string]dialect{
 			WHERE m.type IN ('table', 'view') ORDER BY m.name, p.cid`,
 	},
 }
+
+// oracleColNames lists the columns of a schema's tables, views and
+// synonyms (under the synonym's name), restricted by cond.
+func oracleColNames(cond string) string {
+	return `WITH a AS (SELECT CAST(:1 AS VARCHAR2(128)) o FROM dual)
+		SELECT name, column_name FROM (
+			SELECT c.table_name name, c.column_name, c.column_id
+			FROM all_tab_columns c JOIN a ON c.owner = a.o
+			WHERE c.table_name NOT LIKE 'BIN$%' ` + cond + `
+			UNION ALL
+			SELECT s.synonym_name, c.column_name, c.column_id
+			FROM all_synonyms s JOIN a ON s.owner = a.o
+			JOIN all_tab_columns c ON c.owner = s.table_owner AND c.table_name = s.table_name
+			WHERE 1 = 1 ` + cond + `)
+		ORDER BY name, column_id`
+}
+
+// oracleSystem lists the schemas Oracle itself owns, which sort last.
+const oracleSystem = `'SYS', 'SYSTEM', 'OUTLN', 'DBSNMP', 'XDB', 'CTXSYS', 'MDSYS', 'ORDSYS', 'ORDDATA', 'ORDPLUGINS',
+	'WMSYS', 'APPQOSSYS', 'AUDSYS', 'GSMADMIN_INTERNAL', 'LBACSYS', 'OJVMSYS', 'DVSYS', 'DVF', 'OLAPSYS',
+	'REMOTE_SCHEDULER_AGENT', 'SI_INFORMTN_SCHEMA', 'ANONYMOUS', 'XS$NULL', 'DIP', 'SYSBACKUP', 'SYSDG',
+	'SYSKM', 'SYSRAC', 'GGSYS', 'DBSFWUSER', 'PDBADMIN', 'EXFSYS', 'SPATIAL_CSW_ADMIN_USR', 'SPATIAL_WFS_ADMIN_USR'`
 
 func hostPort(p config.Profile, defPort int) string {
 	host, port := p.Host, p.Port
@@ -147,6 +229,42 @@ func mysqlDSN(p config.Profile) (string, error) {
 		cfg.TLSConfig = p.SSLMode
 	}
 	return cfg.FormatDSN(), nil
+}
+
+func oracleDSN(p config.Profile) (string, error) {
+	if p.URL != "" {
+		return p.URL, nil // oracle://user:password@host:1521/service
+	}
+	if p.Host == "" || p.Database == "" {
+		return "", fmt.Errorf("profile %q: oracle needs host and database (service name, or SID with \"sid\": true)", p.Name)
+	}
+	port := p.Port
+	if port == 0 {
+		port = 1521
+	}
+	opts := map[string]string{}
+	service := p.Database
+	if p.SID {
+		opts["SID"], service = p.Database, ""
+	}
+	switch p.SSLMode {
+	case "", "disable":
+	case "require":
+		opts["SSL"], opts["SSL VERIFY"] = "true", "false" // encrypt, as sslmode=require does
+	default:
+		opts["SSL"], opts["SSL VERIFY"] = "true", "true"
+	}
+	switch role := strings.ToUpper(p.Role); role {
+	case "":
+	case "SYSDBA", "SYSOPER":
+		opts["DBA PRIVILEGE"] = role
+	default:
+		return "", fmt.Errorf("profile %q: unknown role %q (sysdba, sysoper)", p.Name, p.Role)
+	}
+	if len(opts) == 0 {
+		opts = nil
+	}
+	return go_ora.BuildUrl(p.Host, port, service, p.User, p.Password, opts), nil
 }
 
 func sqliteDSN(p config.Profile) (string, error) {

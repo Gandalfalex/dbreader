@@ -151,7 +151,13 @@ func (m *model) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // sqlCatalog is what the sql prompt completes from: the tables of the
 // schema being browsed and their columns, once those have loaded.
 func (m *model) sqlCatalog() sqlCatalog {
-	cat := sqlCatalog{quote: m.conn.Quote, foldsUp: m.conn.Dialect() == sqlsafe.Postgres}
+	cat := sqlCatalog{quote: m.conn.Quote}
+	switch m.conn.Dialect() {
+	case sqlsafe.Postgres:
+		cat.fold = foldLower
+	case sqlsafe.Oracle:
+		cat.fold = foldUpper
+	}
 	for _, e := range m.tables.all {
 		cat.tables = append(cat.tables, e.Name)
 	}

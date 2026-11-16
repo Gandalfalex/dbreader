@@ -59,7 +59,11 @@ func (m *model) loadColNames(schema string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 		defer cancel()
 		names, err := conn.ColumnNames(ctx, schema)
-		return colNamesMsg{conn: conn, schema: schema, names: names, err: err}
+		if err != nil {
+			return colNamesMsg{conn: conn, schema: schema, err: err}
+		}
+		search, err := conn.SearchColumns(ctx, schema)
+		return colNamesMsg{conn: conn, schema: schema, names: names, search: search, err: err}
 	}
 }
 

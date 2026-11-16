@@ -119,3 +119,83 @@ func TestSpans(t *testing.T) {
 		t.Errorf("second = %q", got)
 	}
 }
+
+func TestClassifyOracle(t *testing.T) {
+	tests := []struct {
+		sql  string
+		want Kind
+		noTx bool
+	}{
+		{"select * from dual", Read, false},
+		{"SELECT name FROM customers WHERE id = :1", Read, false},
+		{"with a as (select 1 x from dual) select * from a", Read, false},
+		{"select 'drop table x' from dual", Read, false},
+		{"select q'[it's; a delete from t]' from dual", Read, false},
+		{"select nq'{drop}' from dual", Read, false},
+		{"select \"DELETE\" from t", Read, false},
+		{"select * from t for update", Write, false},
+		{"select seq.nextval from dual", Write, false},
+		{"select * into x from t", Write, false},
+		{"explain plan for select 1 from dual", Write, false}, // writes the plan table
+		{"describe customers", Write, false},                  // SQL*Plus, not SQL
+		{"insert into t values (1)", Write, false},
+		{"merge into t using s on (1=1) when matched then update set a = 1", Write, false},
+		{"update t set a = 1 where id = 1", Write, false},
+		{"update t set a = 1", Destructive, false},
+		{"delete from t", Destructive, false},
+		{"create table t (a number)", Write, true},
+		{"create index i on t (a)", Write, true},
+		{"drop table t", Destructive, true},
+		{"truncate table t", Destructive, true},
+		{"alter table t add b number", Destructive, true},
+		{"grant select on t to u", Write, true},
+		{"comment on table t is 'x'", Write, true},
+		{"begin delete from t; end;", Destructive, false},
+		{"BEGIN\n  NULL;\nEND;", Destructive, false},
+		{"declare x number; begin x := 1; end;", Destructive, false},
+		{"create or replace procedure p is begin null; end;", Destructive, true},
+		{"create or replace editionable package body pk as end;", Destructive, true},
+		{"create trigger tr before insert on t begin null; end;", Destructive, true},
+		{"call do_it()", Write, false},
+		{"commit", TxControl, false},
+		{"rollback", TxControl, false},
+		{"savepoint a", TxControl, false},
+	}
+	for _, tt := range tests {
+		got := Classify(tt.sql, Oracle)
+		if got.Kind != tt.want || got.NoTx != tt.noTx {
+			t.Errorf("Classify(%q) = %v noTx=%v (%s), want %v noTx=%v", tt.sql, got.Kind, got.NoTx, got.Reason, tt.want, tt.noTx)
+		}
+	}
+}
+
+func TestSplitOracle(t *testing.T) {
+	block := "begin\n  insert into t values (1);\n  delete from t;\nend;"
+	proc := "create or replace procedure p is\nbegin\n  null;\nend;"
+	tests := []struct {
+		name string
+		sql  string
+		want []string
+	}{
+		{"plain", "select 1 from dual;\nselect 2 from dual;", []string{"select 1 from dual", "select 2 from dual"}},
+		{"block runs to the slash", block + "\n/\nselect 1 from dual;", []string{block, "select 1 from dual"}},
+		{"procedure runs to the slash", proc + "\n/\n", []string{proc}},
+		{"block without slash is one statement", block, []string{block}},
+		{"slash after plain sql", "select 1 from dual\n/\nselect 2 from dual\n/\n", []string{"select 1 from dual", "select 2 from dual"}},
+		{"slash with white space around", "select 1 from dual\n  /  \n", []string{"select 1 from dual"}},
+		{"division is not a terminator", "select 4\n/ 2 from dual;", []string{"select 4\n/ 2 from dual"}},
+		{"q-quote hides semicolons", "select q'[a; b]' from dual; select 2 from dual", []string{"select q'[a; b]' from dual", "select 2 from dual"}},
+		{"q-quote with other delimiters", "select q'!a;'b!' from dual;select Q'(x;)' from dual", []string{"select q'!a;'b!' from dual", "select Q'(x;)' from dual"}},
+		{"string with doubled quote", "select 'it''s; fine' from dual;", []string{"select 'it''s; fine' from dual"}},
+		{"slash in a comment", "select 1 from dual -- ok\n-- /\n;", []string{"select 1 from dual -- ok\n-- /"}},
+	}
+	for _, tt := range tests {
+		if got := Split(tt.sql, Oracle); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s:\n got %q\nwant %q", tt.name, got, tt.want)
+		}
+	}
+	// other dialects are unaffected: begin is a transaction, / is division
+	if got := Split("begin; select 4\n/ 2;", Postgres); len(got) != 2 {
+		t.Errorf("postgres split = %q", got)
+	}
+}

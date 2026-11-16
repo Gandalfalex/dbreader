@@ -43,7 +43,9 @@ type model struct {
 	// column names per table of colSchema, for sql completion
 	colNames  map[string][]string
 	colSchema string
-	complTail string // text right of the cursor while completing
+	// the columns text can be searched in (no LOBs or raw bytes), per table
+	searchCols map[string][]string
+	complTail  string // text right of the cursor while completing
 
 	edCompl cmdline.Line // completion popup of the script editor
 	edStart int          // column where the word being completed starts

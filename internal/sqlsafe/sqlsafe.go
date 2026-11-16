@@ -17,6 +17,7 @@ const (
 	Postgres Dialect = iota
 	MySQL
 	SQLite
+	Oracle
 )
 
 // Kind is how dangerous a statement is, in rising order.
@@ -52,6 +53,18 @@ var readVerbs = map[string]bool{
 	"VALUES": true, "TABLE": true, "WITH": true, "PRAGMA": true,
 }
 
+// oracleReadVerbs: in Oracle SHOW, DESCRIBE and PRAGMA are not SQL, and
+// EXPLAIN PLAN writes to the plan table.
+var oracleReadVerbs = map[string]bool{"SELECT": true, "WITH": true, "VALUES": true}
+
+// oracleImplicitCommit lists the Oracle statements that commit before and
+// after they run: they cannot be rolled back and end any open transaction.
+var oracleImplicitCommit = map[string]bool{
+	"CREATE": true, "DROP": true, "ALTER": true, "TRUNCATE": true, "RENAME": true,
+	"GRANT": true, "REVOKE": true, "COMMENT": true, "FLASHBACK": true, "PURGE": true,
+	"ANALYZE": true, "AUDIT": true, "NOAUDIT": true, "ASSOCIATE": true, "DISASSOCIATE": true,
+}
+
 // writeWords turn a statement that starts with a read verb into a write
 // when they appear anywhere in it: data-modifying CTEs, SELECT INTO,
 // EXPLAIN ANALYZE DELETE, SELECT ... FOR UPDATE.
@@ -59,6 +72,7 @@ var writeWords = map[string]bool{
 	"INSERT": true, "UPDATE": true, "DELETE": true, "MERGE": true, "INTO": true,
 	"DROP": true, "ALTER": true, "CREATE": true, "TRUNCATE": true,
 	"GRANT": true, "REVOKE": true, "CALL": true, "COPY": true, "LOCK": true,
+	"NEXTVAL": true, // advances a sequence, which no rollback undoes
 }
 
 var destructiveVerbs = map[string]bool{"DROP": true, "TRUNCATE": true, "ALTER": true}
@@ -89,13 +103,20 @@ func Classify(sql string, d Dialect) Stmt {
 		return false
 	}
 
+	reads := readVerbs
+	if d == Oracle {
+		reads = oracleReadVerbs
+	}
 	switch {
+	case d == Oracle && (st.Verb == "BEGIN" || st.Verb == "DECLARE" || isPLSQLUnit(toks)):
+		// anonymous blocks and stored program units can run anything
+		st.Kind, st.Reason = Destructive, "PL/SQL can run any code, including DDL and commits that cannot be rolled back"
 	case hint:
 		// MySQL runs the contents of /*! ... */ comments.
 		st.Kind, st.Reason = Write, "contains an executable comment (/*! ... */)"
 	case txVerbs[st.Verb]:
 		st.Kind, st.Reason = TxControl, "transactions are managed by dbreader"
-	case readVerbs[st.Verb]:
+	case reads[st.Verb]:
 		st.Kind = Read
 		for _, t := range toks[1:] {
 			if writeWords[t.word] {
@@ -122,6 +143,9 @@ func Classify(sql string, d Dialect) Stmt {
 		st.NoTx = noTxVerbs[st.Verb] || has("CONCURRENTLY") ||
 			(len(toks) > 1 && (st.Verb == "CREATE" || st.Verb == "DROP") &&
 				(toks[1].word == "DATABASE" || toks[1].word == "TABLESPACE"))
+		if d == Oracle && oracleImplicitCommit[st.Verb] {
+			st.NoTx = true
+		}
 		// MySQL commits DDL implicitly, whatever the transaction state.
 		if d == MySQL && (destructiveVerbs[st.Verb] || st.Verb == "CREATE" || st.Verb == "RENAME") {
 			st.NoTx = true
@@ -131,29 +155,68 @@ func Classify(sql string, d Dialect) Stmt {
 }
 
 // Span is the byte range of one statement in a script, from the end of
-// the statement before it to its own semicolon (exclusive).
+// the statement before it to its own terminator (exclusive).
 type Span struct{ Start, End int }
 
+// slash marks a line holding only "/", which ends a statement in Oracle
+// scripts (SQL*Plus convention) and is the only end of a PL/SQL block.
+const slash = 0x1f
+
 // Spans locates the statements of a script: it is cut at top-level
-// semicolons, and pieces with nothing but comments are dropped.
+// semicolons, and pieces with nothing but comments are dropped. In Oracle a
+// PL/SQL block contains semicolons and runs up to the line with the lone
+// slash instead.
 func Spans(sql string, d Dialect) []Span {
 	var out []Span
 	start := 0
+	var words []token // the statement so far, for block detection
 	add := func(end int) {
 		if toks, hint := lex(sql[start:end], d); len(toks) > 0 || hint {
 			out = append(out, Span{start, end})
 		}
-		start = end + 1
+		start, words = end+1, words[:0]
 	}
-	scan(sql, d, func(i int, _ string, punct byte, _ bool) {
-		if punct == ';' {
+	scan(sql, d, func(i int, word string, punct byte, _ bool) {
+		switch {
+		case punct == ';':
+			if d == Oracle && isPLSQLStart(words) {
+				return
+			}
 			add(i)
+		case punct == slash:
+			add(i)
+		case word != "" && len(words) < 8:
+			words = append(words, token{word: word})
 		}
 	})
 	if start < len(sql) {
 		add(len(sql))
 	}
 	return out
+}
+
+// isPLSQLStart reports whether a statement begins a PL/SQL block or a
+// stored program unit, whose semicolons do not end it.
+func isPLSQLStart(w []token) bool {
+	return len(w) > 0 && (w[0].word == "BEGIN" || w[0].word == "DECLARE" || isPLSQLUnit(w))
+}
+
+// isPLSQLUnit matches CREATE [OR REPLACE] [EDITIONABLE] FUNCTION|PROCEDURE|
+// PACKAGE|TRIGGER|TYPE ...
+func isPLSQLUnit(w []token) bool {
+	if len(w) == 0 || w[0].word != "CREATE" {
+		return false
+	}
+	for _, t := range w[1:] {
+		switch t.word {
+		case "OR", "REPLACE", "EDITIONABLE", "NONEDITIONABLE":
+		case "FUNCTION", "PROCEDURE", "PACKAGE", "TRIGGER", "TYPE", "LIBRARY":
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // Split returns the statements of a script, trimmed.
@@ -208,6 +271,9 @@ func scan(sql string, d Dialect, emit func(pos int, word string, punct byte, hin
 			}
 		case c == '\'' || c == '"' || c == '`':
 			i = skipQuoted(sql, i, d == MySQL && c != '`')
+		case c == '/' && d == Oracle && loneSlash(sql, i):
+			emit(i, "", slash, false)
+			i++
 		case c == '$' && d == Postgres:
 			if end, ok := dollarQuote(sql, i); ok {
 				i = end
@@ -218,6 +284,11 @@ func scan(sql string, d Dialect, emit func(pos int, word string, punct byte, hin
 			j := i
 			for j < n && isWordPart(rune(sql[j])) {
 				j++
+			}
+			// Oracle alternative quoting: q'[ ... ]', nq'{ ... }'
+			if w := strings.ToLower(sql[i:j]); d == Oracle && (w == "q" || w == "nq") && j+1 < n && sql[j] == '\'' {
+				i = skipQQuote(sql, j)
+				continue
 			}
 			emit(i, strings.ToUpper(sql[i:j]), 0, false)
 			i = j
@@ -269,3 +340,34 @@ func dollarQuote(sql string, i int) (int, bool) {
 func isWordStart(r rune) bool { return r == '_' || r >= 0x80 || unicode.IsLetter(r) }
 
 func isWordPart(r rune) bool { return isWordStart(r) || (r >= '0' && r <= '9') || r == '$' }
+
+// loneSlash reports whether the "/" at i is alone on its line.
+func loneSlash(sql string, i int) bool {
+	for j := i - 1; j >= 0 && sql[j] != '\n'; j-- {
+		if sql[j] != ' ' && sql[j] != '\t' && sql[j] != '\r' {
+			return false
+		}
+	}
+	for j := i + 1; j < len(sql) && sql[j] != '\n'; j++ {
+		if sql[j] != ' ' && sql[j] != '\t' && sql[j] != '\r' {
+			return false
+		}
+	}
+	return true
+}
+
+// skipQQuote returns the index after the q'x ... x' literal whose opening
+// quote is at i.
+func skipQQuote(sql string, i int) int {
+	if i+1 >= len(sql) {
+		return len(sql)
+	}
+	closing := map[byte]byte{'[': ']', '(': ')', '{': '}', '<': '>'}[sql[i+1]]
+	if closing == 0 {
+		closing = sql[i+1]
+	}
+	if end := strings.Index(sql[i+2:], string(closing)+"'"); end >= 0 {
+		return i + 2 + end + 2
+	}
+	return len(sql)
+}

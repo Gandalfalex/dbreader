@@ -13,8 +13,8 @@ var testCatalog = sqlCatalog{
 		"orders":    {"id", "user_id", "total"},
 		"UserRoles": {"user_id", "role"},
 	},
-	quote:   func(s string) string { return `"` + s + `"` },
-	foldsUp: true,
+	quote: func(s string) string { return `"` + s + `"` },
+	fold:  foldLower,
 }
 
 // complete runs completion with the cursor at "|" and returns the labels
@@ -66,6 +66,24 @@ func TestCompleteSQL(t *testing.T) {
 		}
 		if tt.first != "" && first != tt.first {
 			t.Errorf("%q: first = %q, want %q", tt.in, first, tt.first)
+		}
+	}
+}
+
+func TestNeedsQuote(t *testing.T) {
+	tests := []struct {
+		rule foldRule
+		name string
+		want bool
+	}{
+		{foldLower, "users", false}, {foldLower, "Users", true}, {foldLower, "a b", true},
+		{foldUpper, "USERS", false}, {foldUpper, "USER_ID", false}, {foldUpper, "Users", true},
+		{foldUpper, "users", true}, {foldUpper, "A$B#", false}, {foldUpper, "1ST", true}, {foldUpper, "A B", true},
+		{foldNone, "Users", false}, {foldNone, "a b", true},
+	}
+	for _, tt := range tests {
+		if got := tt.rule.needsQuote(tt.name); got != tt.want {
+			t.Errorf("rule %d needsQuote(%q) = %v, want %v", tt.rule, tt.name, got, tt.want)
 		}
 	}
 }

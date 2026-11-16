@@ -59,6 +59,7 @@ type (
 		conn   *db.Conn
 		schema string
 		names  map[string][]string
+		search map[string][]string
 		err    error
 	}
 	grepMsg struct {

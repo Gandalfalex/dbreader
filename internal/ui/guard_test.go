@@ -581,3 +581,138 @@ func TestBlockedConnection(t *testing.T) {
 		t.Fatalf("conn = %v, status = %q", h.m.conn, h.m.status)
 	}
 }
+
+// TestServerOracle walks an Oracle server seeded by dev/oracle/01-seed.sql:
+// DBREADER_TEST_ORACLE=oracle://app:app@localhost:1521/FREEPDB1 go test ./internal/ui
+func TestServerOracle(t *testing.T) {
+	url := os.Getenv("DBREADER_TEST_ORACLE")
+	if url == "" {
+		t.Skip("DBREADER_TEST_ORACLE not set")
+	}
+	p := config.Profile{Name: "ora", Driver: config.Oracle, URL: url, Limit: 2}
+	h := &harness{t: t, m: newModel(&config.Settings{Profiles: []config.Profile{p, p}}, "")}
+	t.Cleanup(h.m.shutdown)
+	h.m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	h.press("enter")
+	if h.m.top() != scrSchemas {
+		t.Fatalf("top = %v, status = %q", h.m.top(), h.m.status)
+	}
+	if e, _ := h.m.schemas.current(); e.Name != "APP" {
+		t.Fatalf("cursor on schema %q, want APP", e.Name)
+	}
+	h.press("enter")
+	have := map[string]bool{}
+	for _, e := range h.m.tables.all {
+		have[e.Name] = true
+	}
+	for _, want := range []string{"CUSTOMERS", "ORDERS", "ATTACHMENTS", "MixedCase", "OPEN_ORDERS"} {
+		if !have[want] {
+			t.Fatalf("table %s missing: %+v, status = %q", want, h.m.tables.all, h.m.status)
+		}
+	}
+	for _, e := range h.m.tables.all {
+		if e.Name == "OPEN_ORDERS" && (e.Cols[0] != "view" || !e.Dim) {
+			t.Errorf("view listed as %+v", e)
+		}
+	}
+
+	// the rows page is cut at the limit with ROWNUM, values of every type are readable
+	h.command("table CUSTOMERS")
+	g := h.m.grid
+	if h.m.top() != scrData || len(g.res.Rows) != 2 || !g.res.Truncated {
+		t.Fatalf("top = %v, rows = %v, status = %q", h.m.top(), g.res, h.m.status)
+	}
+	h.command("limit 10")
+	g = h.m.grid
+	out := h.screen()
+	for _, want := range []string{"Ada Lovelace", "Wrote the first program.", "NULL", "ID", "CREATED_AT"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("customers screen lacks %q:\n%s", want, out)
+		}
+	}
+	if date := g.res.Rows[0][3].S; len(date) != len("2006-01-02 15:04:05") && !strings.Contains(date, ":") {
+		t.Errorf("DATE shows no time of day: %q", date)
+	}
+	h.press("i") // structure, with defaults read from a LONG column
+	if out := h.screen(); h.m.top() != scrStruct || !strings.Contains(out, "VARCHAR2(100)") || !strings.Contains(out, "SYSDATE") || !strings.Contains(out, "PK") {
+		t.Errorf("structure page:\n%s", out)
+	}
+	h.press("q", "q")
+	h.command("table ATTACHMENTS")
+	if blob := h.m.grid.res.Rows[0][3].S; blob != "%PDF-1.4" { // valid text is shown as text
+		t.Errorf("BLOB = %q", blob)
+	}
+	h.press("q")
+
+	// sort and server-side search, then search over all tables without tripping on the BLOB
+	h.command("table CUSTOMERS")
+	h.press("l", "o", "o")
+	if b := h.m.grid.browse; b.Order != "NAME" || !b.Desc || h.m.grid.res.Rows[0][1].S != "Cy Young" {
+		t.Fatalf("sort: %+v, first = %v", b, h.m.grid.res.Rows[0])
+	}
+	h.press("?")
+	h.typeText("NEVER EMAIL") // inside the CLOB, any case
+	h.press("enter")
+	if rows := h.m.grid.res.Rows; len(rows) != 1 || rows[0][1].S != "Cy Young" {
+		t.Fatalf("search in a CLOB: %v, status = %q", rows, h.m.status)
+	}
+	h.press("q")
+	h.command("grep ada")
+	if h.m.top() != scrGrep || len(h.m.grep.all) != 1 || h.m.grep.all[0].Name != "CUSTOMERS" || h.m.grepFailed != 0 { // LOB and raw columns are skipped, not errors
+		t.Fatalf("grep: hits = %+v, failed = %d, status = %q", h.m.grep.all, h.m.grepFailed, h.m.status)
+	}
+	h.press("esc")
+
+	// completion quotes what Oracle would otherwise upper-case
+	h.press("s")
+	h.typeText("select * from mixed")
+	if len(h.m.sqlHist.Items) != 1 || !strings.Contains(h.m.sqlHist.Items[0].Value, `"MixedCase"`) {
+		t.Fatalf("completion = %+v", h.m.sqlHist.Items)
+	}
+	h.press("tab", "enter")
+	if h.m.top() != scrData || len(h.m.grid.res.Rows) != 1 || h.m.grid.res.Rows[0][0].S != "a" {
+		t.Fatalf("quoted table: top = %v, status = %q", h.m.top(), h.m.status)
+	}
+	h.press("q")
+	h.sql("select name from customers where id = 1")
+	if h.m.top() != scrData || h.m.grid.res.Rows[0][0].S != "Ada Lovelace" {
+		t.Fatalf("unquoted names: status = %q", h.m.status)
+	}
+	h.press("q")
+
+	// the write guard on Oracle
+	count := func() string {
+		res, err := h.m.conn.Query(t.Context(), "SELECT count(*) FROM attachments", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Rows[0][0].S
+	}
+	h.sql("delete from attachments where order_id = 1")
+	if h.m.confirm == nil || h.m.confirm.want != "yes" {
+		t.Fatalf("confirm = %+v", h.m.confirm)
+	}
+	h.typeText("yes")
+	h.press("enter")
+	if h.m.pending == nil || h.m.pending.Affected != 1 {
+		t.Fatalf("pending = %+v, status = %q", h.m.pending, h.m.status)
+	}
+	h.press("r")
+	if count() != "1" {
+		t.Fatalf("count = %s after rollback", count())
+	}
+	for _, stmt := range []string{"drop table orders", "create table zz (a int)", "begin null; end;", "update orders set total = 0"} {
+		h.sql(stmt)
+		if h.m.confirm == nil || h.m.confirm.want != "ora" {
+			t.Fatalf("%s: confirm = %+v, want the connection name", stmt, h.m.confirm)
+		}
+		if stmt != "update orders set total = 0" && stmt != "begin null; end;" && !strings.Contains(h.screen(), "cannot be rolled back") {
+			t.Errorf("%s: no warning that it commits at once:\n%s", stmt, h.screen())
+		}
+		h.press("esc")
+	}
+	if count() != "1" {
+		t.Fatalf("count = %s", count())
+	}
+}

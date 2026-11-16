@@ -93,7 +93,7 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 			slog.Warn("column names for completion", "schema", msg.schema, "err", msg.err)
 			return nil
 		}
-		m.colNames, m.colSchema = msg.names, msg.schema
+		m.colNames, m.searchCols, m.colSchema = msg.names, msg.search, msg.schema
 		if msg.schema == m.schema { // let the table filter find columns too
 			for i := range m.tables.all {
 				e := &m.tables.all[i]
@@ -190,7 +190,7 @@ func (m *model) connected(msg connMsg) tea.Cmd {
 		m.limit = config.DefaultLimit
 	}
 	m.stack = m.stack[:1]
-	m.tables, m.grid, m.colNames = listState{}, grid{}, nil
+	m.tables, m.grid, m.colNames, m.searchCols = listState{}, grid{}, nil, nil
 
 	var rows []entry
 	for _, s := range msg.schemas {
@@ -215,6 +215,12 @@ func (m *model) connected(msg connMsg) tea.Cmd {
 var systemSchemas = map[string]bool{
 	"pg_catalog": true, "information_schema": true,
 	"mysql": true, "performance_schema": true, "sys": true,
+	// Oracle
+	"SYS": true, "SYSTEM": true, "OUTLN": true, "DBSNMP": true, "XDB": true, "CTXSYS": true, "MDSYS": true,
+	"ORDSYS": true, "ORDDATA": true, "WMSYS": true, "APPQOSSYS": true, "AUDSYS": true, "GSMADMIN_INTERNAL": true,
+	"LBACSYS": true, "OJVMSYS": true, "DVSYS": true, "DVF": true, "OLAPSYS": true, "ANONYMOUS": true,
+	"REMOTE_SCHEDULER_AGENT": true, "SI_INFORMTN_SCHEMA": true, "XS$NULL": true, "DBSFWUSER": true,
+	"SYSBACKUP": true, "SYSDG": true, "SYSKM": true, "SYSRAC": true, "GGSYS": true, "PDBADMIN": true,
 }
 
 func (m *model) showTables(schema string, tables []db.Table) {

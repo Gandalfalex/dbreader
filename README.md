@@ -1,6 +1,6 @@
 # dbreader
 
-Vim-style terminal browser for PostgreSQL, MySQL/MariaDB and SQLite. Sibling of
+Vim-style terminal browser for PostgreSQL, Oracle, MySQL/MariaDB and SQLite. Sibling of
 s3reader and gdocker: same look, same keys, navigation from
 [vim-kit](https://github.com/Gandalfalex/vim-kit).
 
@@ -38,8 +38,8 @@ It writes to `-config <path>`, else the settings file already in use, else
 dbreader reads the DBeaver workspace in place on every start, so there is
 nothing to import or keep in sync:
 
-- **Connections** from `data-sources.json` (PostgreSQL, MySQL/MariaDB, SQLite;
-  others are skipped and logged). Read-only connections stay read-only, the
+- **Connections** from `data-sources.json` (PostgreSQL, Oracle, MySQL/MariaDB,
+  SQLite; others are skipped and logged). Read-only connections stay read-only, the
   "Production" connection type becomes `protect`.
 - **Logins** from `credentials-config.json`, decrypted in memory only.
   With a DBeaver master password set they are not readable; the connections
@@ -73,6 +73,55 @@ Connections through an SSH tunnel are listed but cannot be opened yet.
 
 Commands: `:connect`, `:schema`, `:table`, `:where <cond>`, `:order <col> [desc]`,
 `:limit <n>`, `:sql <statement>`, `:edit`, `:structure`.
+
+## Oracle
+
+Service name, SID and TNS-descriptor URLs from DBeaver all work
+(`jdbc:oracle:thin:@//host:1521/SERVICE`, `@host:1521:SID`, `@(DESCRIPTION=...)`),
+as does `tcps`. In settings.json: `"driver": "oracle"`, `host`, `port`,
+`database` (service name; add `"sid": true` for a SID), `user`, `password`.
+
+- A TNS alias (`@PRODDB`) is resolved through `tnsnames.ora`, looked for in the
+  directory DBeaver has configured, `$TNS_ADMIN`, `$ORACLE_HOME/network/admin`
+  and your home directory. With several addresses (RAC) the first is used.
+  An alias that is found nowhere is listed as `unsupported`, with the reason.
+- `SYSDBA`/`SYSOPER` logons are taken from DBeaver (`"role": "sysdba"` in
+  settings.json).
+- Synonyms for tables and views are listed with the tables and show the
+  columns of what they point to.
+- Not supported: SSH tunnels, and wallet, Kerberos or OS authentication
+  (such connections are listed as `unsupported`).
+- `DBMS_OUTPUT` of a PL/SQL block is not shown.
+- **Read-only is weaker on Oracle.** Its read-only transaction stops
+  `INSERT`/`UPDATE`/`DELETE` but not DDL (Oracle commits first, then runs
+  it). dbreader therefore also refuses anything that is not plainly a
+  `SELECT` on the read path. Every `CREATE`/`DROP`/`ALTER`/`TRUNCATE` and every
+  PL/SQL block asks for the connection name, and DDL says it cannot be rolled
+  back. A function that does DML inside a `SELECT` is the one case neither
+  layer can see.
+- In scripts a PL/SQL block (`BEGIN`, `DECLARE`, `CREATE PROCEDURE`, ...) runs
+  to the line holding only `/`, as in SQL*Plus; `/` also ends a plain statement.
+- A table created or altered less than a second ago can fail to read with
+  `ORA-01466`; dbreader retries that automatically.
+- Table row counts come from optimizer statistics and are blank until gathered.
+
+## Local test databases
+
+`dev/oracle/` seeds an Oracle Free container (needs about 5 GB of Docker disk):
+
+```
+docker volume create dbreader-oracle-data
+docker run -d --name dbreader-oracle --restart unless-stopped \
+  -e ORACLE_PASSWORD=oracle -e APP_USER=app -e APP_USER_PASSWORD=app \
+  -p 127.0.0.1:1521:1521 -v dbreader-oracle-data:/opt/oracle/oradata \
+  -v "$PWD/dev/oracle:/container-entrypoint-initdb.d:ro" \
+  gvenzl/oracle-free:23-slim-faststart
+```
+
+Connect with host `localhost`, port 1521, service `FREEPDB1`, user `app`,
+password `app` (schema APP holds the seed tables). `SYS` and `SYSTEM` use the
+password `oracle`. The seed runs once; to re-run it, remove the container and
+the volume.
 
 ## Search and yank
 
@@ -124,4 +173,5 @@ make test
 # against real servers:
 DBREADER_TEST_POSTGRES='postgres://postgres:test@localhost:5432/postgres?sslmode=disable' go test ./...
 DBREADER_TEST_MYSQL='root:test@tcp(localhost:3306)/mysql' go test ./internal/db
+DBREADER_TEST_ORACLE='oracle://app:app@localhost:1521/FREEPDB1' go test -p 1 ./internal/db ./internal/ui
 ```
