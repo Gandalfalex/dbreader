@@ -1,0 +1,45 @@
+{
+  "profiles": [
+    {
+      "name": "local-postgres",
+      "driver": "postgres",
+      "host": "localhost",
+      "port": 5432,
+      "user": "postgres",
+      "password": "${PGPASSWORD}",
+      "database": "postgres",
+      "sslMode": "disable"
+    },
+    {
+      "name": "prod",
+      "driver": "postgres",
+      "host": "db.internal.example.com",
+      "user": "app",
+      "password": "${PROD_DB_PASSWORD}",
+      "database": "app",
+      "schema": "public",
+      "sslMode": "require",
+      "protect": true
+    },
+    {
+      "name": "prod-replica",
+      "driver": "postgres",
+      "url": "postgres://report:${REPLICA_PASSWORD}@replica.internal.example.com:5432/app?sslmode=require",
+      "readOnly": true
+    },
+    {
+      "name": "local-mysql",
+      "driver": "mysql",
+      "host": "localhost",
+      "user": "root",
+      "password": "${MYSQL_PWD}",
+      "database": "app",
+      "limit": 1000
+    },
+    {
+      "name": "notes",
+      "driver": "sqlite",
+      "path": "~/data/notes.db"
+    }
+  ]
+}
