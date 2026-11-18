@@ -22,7 +22,19 @@ func main() {
 	logFlag := flag.String("log", logging.DefaultPath(), `log file path ("off" to disable)`)
 	debugFlag := flag.Bool("debug", false, "verbose logging")
 	initFlag := flag.Bool("init", false, "write the DBeaver connections to settings.json (-config, else the one in use, else ./settings.json) to set their readOnly/protect flags, then exit")
+	lspFlag := flag.String("lsp", "", "language server completing from this catalog file (dbreader starts it for neovim)")
+	completeFlag := flag.String("complete", "", "complete from this catalog file for vim's omnifunc (dbreader sets it up)")
 	flag.Parse()
+
+	// helpers the editor runs while dbreader waits for it
+	switch {
+	case *lspFlag != "":
+		exitOn(ui.ServeLSP(*lspFlag, os.Stdin, os.Stdout))
+		return
+	case *completeFlag != "":
+		exitOn(ui.CompleteVim(*completeFlag, os.Stdin, os.Stdout))
+		return
+	}
 
 	logFile, err := logging.Setup(*logFlag, *debugFlag)
 	if err != nil {
@@ -35,6 +47,13 @@ func main() {
 		slog.Error("fatal", "err", err)
 		fmt.Fprintln(os.Stderr, err)
 		logFile.Close()
+		os.Exit(1)
+	}
+}
+
+func exitOn(err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }

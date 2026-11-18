@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
@@ -22,17 +23,21 @@ import (
 
 type model struct {
 	settings *config.Settings
+	state    *config.State
 	w, h     int
 
 	stack []screen
 
 	conns   listState
 	schemas listState
-	tables  listState
-	scripts listState
-	grep    listState // tables matching grepText
-	script  fileView  // text of scriptFile
-	grid    grid
+	// what the server said about the schemas, and the one names resolve to
+	schemaInfo    []db.Schema
+	currentSchema string
+	tables        listState
+	scripts       listState
+	grep          listState // tables matching grepText
+	script        fileView  // text of scriptFile
+	grid          grid
 
 	scriptFile config.Script
 	findFrom   visual.Pos // cursor when / was opened in the script
@@ -41,8 +46,12 @@ type model struct {
 	grepSeen, grepFailed int // tables searched, and those that failed
 
 	// column names per table of colSchema, for sql completion
-	colNames  map[string][]string
-	colSchema string
+	colNames    map[string][]string
+	colSchema   string
+	colsLoading string // schema whose column names are being fetched
+	// the catalog file of an external editor session, which loadColNames
+	// keeps up to date while dbreader waits for the editor
+	edCatalog atomic.Pointer[editorCatalog]
 	// the columns text can be searched in (no LOBs or raw bytes), per table
 	searchCols map[string][]string
 	complTail  string // text right of the cursor while completing
@@ -109,6 +118,7 @@ func newModel(s *config.Settings, logPath string) *model {
 
 	m := &model{
 		settings: s,
+		state:    &config.State{},
 		input:    in,
 		spin:     spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(lipgloss.NewStyle().Foreground(cAccent))),
 		vp:       viewport.New(),

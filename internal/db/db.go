@@ -48,6 +48,12 @@ type Table struct {
 	Rows int64  // planner estimate, -1 when unknown
 }
 
+type Schema struct {
+	Name    string
+	Objects int  // tables and views
+	System  bool // owned by the server itself
+}
+
 type Column struct {
 	Name     string
 	Type     string
@@ -253,22 +259,33 @@ func (c *Conn) Exec(ctx context.Context, stmt sqlsafe.Stmt) (*Pending, error) {
 	return p, nil
 }
 
-func (c *Conn) Schemas(ctx context.Context) ([]string, error) {
+func (c *Conn) Schemas(ctx context.Context) ([]Schema, error) {
 	if !c.HasSchemas() {
 		return nil, nil
 	}
-	var out []string
+	out, err := c.schemaList(ctx, c.d.schemas)
+	if err != nil && c.d.schemasOld != "" && ctx.Err() == nil {
+		out, err = c.schemaList(ctx, c.d.schemasOld)
+	}
+	return out, err
+}
+
+func (c *Conn) schemaList(ctx context.Context, query string) ([]Schema, error) {
+	var out []Schema
 	err := c.read(ctx, func(q querier) error {
-		rows, err := q.QueryContext(ctx, c.d.schemas)
+		out = out[:0]
+		rows, err := q.QueryContext(ctx, query)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var s string
-			if err := rows.Scan(&s); err != nil {
+			var s Schema
+			var sys int
+			if err := rows.Scan(&s.Name, &s.Objects, &sys); err != nil {
 				return err
 			}
+			s.System = sys != 0
 			out = append(out, s)
 		}
 		return rows.Err()
@@ -448,10 +465,13 @@ func (c *Conn) CountMatches(ctx context.Context, schema, table string, cols []st
 }
 
 // Quote quotes an identifier.
-func (c *Conn) Quote(ident string) string {
-	q := string(c.d.quote)
-	return q + strings.ReplaceAll(ident, q, q+q) + q
-}
+func (c *Conn) Quote(ident string) string { return QuoteIdent(c.QuoteChar(), ident) }
+
+// QuoteChar is the character the server quotes identifiers with.
+func (c *Conn) QuoteChar() string { return string(c.d.quote) }
+
+// QuoteIdent quotes ident with q, doubling any q inside it.
+func QuoteIdent(q, ident string) string { return q + strings.ReplaceAll(ident, q, q+q) + q }
 
 func (c *Conn) Qualified(schema, table string) string {
 	if schema == "" || !c.HasSchemas() {

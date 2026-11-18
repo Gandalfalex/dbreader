@@ -22,6 +22,8 @@ const helpText = `
     l / enter / →       connect, open schema, open table
     h / - / ← / bksp    back
     i / gi              table structure
+    * (schema list)     pin the schema: listed first, never hidden, remembered
+    zh (schema list)    show / hide system schemas and those without tables
     r                   reload
     q                   quit (press twice below the connection list; back, in data and pager views)
     ctrl+c              quit anywhere (an open transaction is rolled back)
@@ -59,8 +61,14 @@ const helpText = `
     S                   sql scripts linked to the connection in DBeaver
 
   SCRIPT (opened from S, or started with :new <name>)
-    A script is edited like a file in vim.
-    h l w b e 0 $       move within the line, j k gg G ... between lines
+    e                   edit the file in $EDITOR (nvim, vim: back here on the
+                        line you left); also e on a script in the list.
+                        Tables and columns complete there too: neovim gets
+                        a language server, vim an omnifunc (ctrl-x ctrl-o)
+    enter               run the selection; without one, the statement the
+                        cursor is in (same as :run)
+    Small edits also work here, like in vim:
+    h l w b 0 $         move within the line, j k gg G ... between lines
     i a I A o O         insert mode; esc leaves it
     tab / shift+tab     (insert) complete tables, columns, keywords;
                         without candidates tab indents

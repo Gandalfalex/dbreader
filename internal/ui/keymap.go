@@ -42,6 +42,9 @@ const (
 	actScripts    keys.Action = "scripts"
 	actVisual     keys.Action = "visual"
 	actVisualLine keys.Action = "visual_line"
+	actPin        keys.Action = "pin"
+	actHidden     keys.Action = "toggle_hidden"
+	actRun        keys.Action = "run"
 )
 
 // common are the actions every screen shares.
@@ -62,6 +65,8 @@ var listKeymap = keys.MustKeymap(motion.VerticalBindings(), common, keys.Binding
 	actBack:   {"h", "left", "backspace", "-"},
 	actInfo:   {"i", "gi"},
 	actSearch: {"?"},
+	actPin:    {"*"},
+	actHidden: {"zh"},
 })
 
 // In the grid h and l move between columns, so only backspace, - and q go back.
@@ -77,11 +82,14 @@ var gridKeymap = keys.MustKeymap(motion.VerticalBindings(), columnMotions, commo
 	actVisualLine: {"V"},
 })
 
-// A script is edited like a file in vim: every in-line motion works and
-// the usual keys insert, delete, yank and paste. r is not bound, so a
-// reload cannot discard edits by accident (:e! does that on purpose).
-var scriptKeymap = keys.MustKeymap(motion.VerticalBindings(), motion.HorizontalBindings(), editBindings,
-	common.Only(actErrors, actSQL, actScripts), keys.Bindings{
+// A script is edited like a file in vim: the in-line motions work and the
+// usual keys insert, delete, yank and paste. e opens the file in $EDITOR
+// instead of moving to the word end; enter runs the statement under the
+// cursor. r is not bound, so a reload cannot discard edits by accident (:e!
+// does that on purpose).
+var scriptKeymap = keys.MustKeymap(motion.VerticalBindings(), scriptMotions(), editBindings,
+	common.Only(actErrors, actSQL, actScripts, actEdit), keys.Bindings{
+		actRun:        {"enter"},
 		actEsc:        {"esc"},
 		actBack:       {"q", "-"},
 		actVisual:     {"v"},
@@ -91,8 +99,9 @@ var scriptKeymap = keys.MustKeymap(motion.VerticalBindings(), motion.HorizontalB
 		actPrev:       {"N"},
 	})
 
-// With a selection, y d c act on it and :run executes it.
+// With a selection, y d c act on it and enter or :run executes it.
 var visualKeymap = keys.MustKeymap(motion.VerticalBindings(), motion.HorizontalBindings(), keys.Bindings{
+	actRun:        {"enter"},
 	actEsc:        {"esc"},
 	actVisual:     {"v"},
 	actVisualLine: {"V"},
@@ -112,6 +121,12 @@ var pagerKeymap = keys.MustKeymap(pagerMotions(), common, keys.Bindings{
 // e stays free for the editor.
 var columnMotions = motion.HorizontalBindings().Only(
 	motion.Left, motion.Right, motion.WordForward, motion.WordBackward, motion.LineStart, motion.LineEnd)
+
+func scriptMotions() keys.Bindings {
+	b := motion.HorizontalBindings()
+	delete(b, motion.WordEnd)
+	return b
+}
 
 // pagerMotions adds less-style keys to the vim defaults.
 func pagerMotions() keys.Bindings {
@@ -186,6 +201,18 @@ var listActions = map[keys.Action]keyFn{
 	actBack:   cmd((*model).back),
 	actInfo:   cmd((*model).openStruct),
 	actSearch: func(m *model, _ keys.Event) (tea.Model, tea.Cmd) { return m.openSearch() },
+	actPin:    do(func(m *model, _ keys.Event) { m.togglePin() }),
+	// in the script list e opens the script under the cursor in $EDITOR
+	actEdit: func(m *model, _ keys.Event) (tea.Model, tea.Cmd) {
+		if m.top() != scrScripts {
+			return m, m.editSQL()
+		}
+		if m.open(); m.top() != scrScript {
+			return m, nil
+		}
+		return m, m.editScript()
+	},
+	actHidden: do(func(m *model, _ keys.Event) { m.toggleHidden() }),
 }
 
 var gridActions = map[keys.Action]keyFn{

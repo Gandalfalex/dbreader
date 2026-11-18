@@ -14,6 +14,8 @@ import (
 // editorHarness is connected and has a script directory to write to.
 func editorHarness(t *testing.T) (*harness, string) {
 	t.Helper()
+	t.Setenv("VISUAL", "") // :new uses the built-in editor without one
+	t.Setenv("EDITOR", "")
 	dir := filepath.Join(t.TempDir(), "scripts")
 	h := newHarness(t, func(p *config.Profile) { p.ScriptDir = dir })
 	h.connect()
@@ -63,7 +65,7 @@ func TestWriteNewScript(t *testing.T) {
 	}
 
 	// fix the column with normal-mode edits: back to line 1, onto "na"
-	h.press("g", "g", "0", "w", "w", "w", "e", "a")
+	h.press("g", "g", "0", "w", "w", "w", "l", "a")
 	h.typeText("me")
 	h.press("esc")
 	if got := h.m.script.lines[0]; got != "select u.name from users u" {
@@ -236,5 +238,34 @@ func TestPasteIntoScript(t *testing.T) {
 	h.press("esc")
 	if got := h.buffer(); got != "a b\nc" {
 		t.Errorf("buffer = %q", got)
+	}
+}
+
+func TestExternalEditor(t *testing.T) {
+	h, dir := editorHarness(t)
+	h.command("new ext")
+	path := filepath.Join(dir, "ext.sql")
+	h.typeText("select 1;")
+	h.press("esc")
+
+	// e saves the buffer before handing the file to the editor
+	h.press("e")
+	if got := readFile(t, path); got != "select 1;\n" || h.m.script.dirty {
+		t.Fatalf("file = %q, dirty = %v", got, h.m.script.dirty)
+	}
+
+	// what the editor left: the file is read again, the cursor follows vim
+	if err := os.WriteFile(path, []byte("select 1;\n\nselect name\n  from users;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.m.update(scriptEditedMsg{path: path, line: 4, col: 5})
+	if h.m.top() != scrScript || len(h.m.script.lines) != 4 || h.m.script.Cursor != 3 || h.m.script.col != 4 {
+		t.Fatalf("top = %v, lines = %q, cursor = %d:%d", h.m.top(), h.m.script.lines, h.m.script.Cursor, h.m.script.col)
+	}
+
+	// enter runs the statement under the cursor
+	h.press("enter")
+	if h.m.top() != scrData || h.m.grid.res == nil || h.m.grid.res.Columns[0] != "name" {
+		t.Fatalf("enter: top = %v, status = %q", h.m.top(), h.m.status)
 	}
 }

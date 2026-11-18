@@ -133,7 +133,8 @@ func (m *model) renderList() string {
 	case scrConns:
 		header = pad("CONNECTION", 26) + pad("DRIVER", 10) + "TARGET"
 	case scrSchemas:
-		header = "SCHEMA"
+		nameW = max(20, m.w-2-10-8)
+		header = pad("SCHEMA", nameW) + padLeft("OBJECTS", 8)
 	case scrTables:
 		nameW = max(20, m.w-2-10-14)
 		header = pad("TABLE", nameW) + pad("TYPE", 10) + padLeft("ROWS", 13)
@@ -210,6 +211,12 @@ func (m *model) renderRow(e entry, nameW int) string {
 			return sMuted.Render(row + e.Cols[0])
 		}
 		return row + sCrumb.Render(e.Cols[0])
+	case scrSchemas:
+		row := pad(name, nameW) + padLeft(e.Cols[0], 8)
+		if e.Dim {
+			row = sMuted.Render(row)
+		}
+		return row + sOK.Render("  "+e.Cols[1])
 	case scrTables:
 		row := pad(name, nameW)
 		if e.Dim {
@@ -495,21 +502,21 @@ func (m *model) hints() string {
 		case scrConns:
 			h = "j/k move · l/enter connect · / filter · : command · :help · q quit"
 		case scrSchemas:
-			h = "j/k move · l open · h back · / filter · s sql · e editor · S scripts · : command · :help"
+			h = "j/k move · l open · h back · / filter · * pin · zh show hidden · s sql · S scripts · : command · :help"
 		case scrTables:
 			h = "l open · / filter by table or column name · ? search rows in all tables · i structure · s sql · S scripts · h back · :help"
 		case scrGrep:
 			h = "l/enter show the matching rows · / filter · ? new search · esc cancel · h back"
 		case scrScripts:
-			h = "l/enter open · / filter by name or content · :new <name> create · h back"
+			h = "l/enter open · e open in $EDITOR · / filter by name or content · :new <name> create · h back"
 		case scrScript:
 			switch {
 			case m.script.insert:
 				h = "type · tab/S-tab complete · esc normal mode"
 			case m.script.sel.Active():
-				h = "move to extend · :run selection · y yank · d delete · c change · esc clear"
+				h = "move to extend · enter run selection · y yank · d delete · c change · esc clear"
 			default:
-				h = "i a o insert · x dd yy p u edit · / n N search · v/V select · :run statement under cursor · :w save · q back"
+				h = "enter run statement under cursor · e edit in $EDITOR · v/V select · / n N search · i a o x dd p u edit here · q back"
 			}
 		case scrData:
 			h = "h/l columns · enter record · / filter loaded · ? search table · o sort · y cell · Y row · V rows then y · :yank csv|json · - back"

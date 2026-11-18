@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/spinner"
@@ -89,6 +90,9 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		if msg.conn != m.conn {
 			return nil
 		}
+		if m.colsLoading == msg.schema {
+			m.colsLoading = ""
+		}
 		if msg.err != nil {
 			slog.Warn("column names for completion", "schema", msg.schema, "err", msg.err)
 			return nil
@@ -152,6 +156,10 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		}
 		return m.finished(msg.pending, msg.committed)
 
+	case scriptEditedMsg:
+		m.scriptEdited(msg)
+		return nil
+
 	case editorMsg:
 		if msg.err != nil {
 			m.fail("editor", msg.err)
@@ -190,14 +198,11 @@ func (m *model) connected(msg connMsg) tea.Cmd {
 		m.limit = config.DefaultLimit
 	}
 	m.stack = m.stack[:1]
-	m.tables, m.grid, m.colNames, m.searchCols = listState{}, grid{}, nil, nil
+	m.tables, m.grid, m.colNames, m.searchCols, m.colsLoading = listState{}, grid{}, nil, nil, ""
 
-	var rows []entry
-	for _, s := range msg.schemas {
-		rows = append(rows, entry{Key: s, Name: s, Dim: systemSchemas[s]})
-	}
 	m.schemas = listState{}
-	m.schemas.set(rows)
+	m.schemaInfo, m.currentSchema = msg.schemas, msg.current
+	m.showSchemas()
 	if !msg.conn.HasSchemas() {
 		return m.loadTables("")
 	}
@@ -208,19 +213,86 @@ func (m *model) connected(msg connMsg) tea.Cmd {
 	}
 	m.schemas.selectKey(msg.current)
 	m.schemas.scroll(m.listHeight())
-	m.setStatus(fmt.Sprintf("%d schemas", len(rows)), false)
+	m.setStatus(fmt.Sprintf("%d schemas%s", len(m.schemas.all), m.hiddenNote()), false)
 	return nil
 }
 
-var systemSchemas = map[string]bool{
-	"pg_catalog": true, "information_schema": true,
-	"mysql": true, "performance_schema": true, "sys": true,
-	// Oracle
-	"SYS": true, "SYSTEM": true, "OUTLN": true, "DBSNMP": true, "XDB": true, "CTXSYS": true, "MDSYS": true,
-	"ORDSYS": true, "ORDDATA": true, "WMSYS": true, "APPQOSSYS": true, "AUDSYS": true, "GSMADMIN_INTERNAL": true,
-	"LBACSYS": true, "OJVMSYS": true, "DVSYS": true, "DVF": true, "OLAPSYS": true, "ANONYMOUS": true,
-	"REMOTE_SCHEDULER_AGENT": true, "SI_INFORMTN_SCHEMA": true, "XS$NULL": true, "DBSFWUSER": true,
-	"SYSBACKUP": true, "SYSDG": true, "SYSKM": true, "SYSRAC": true, "GGSYS": true, "PDBADMIN": true,
+// showSchemas lists the schemas: pinned ones first, then the rest in server
+// order. System and empty schemas are hidden unless pinned, opened by the
+// profile or the one unqualified names resolve to.
+func (m *model) showSchemas() {
+	conn := m.conn.Profile.Name
+	rows := make([]entry, len(m.schemaInfo))
+	for i, s := range m.schemaInfo {
+		pin := ""
+		if m.state.IsPinned(conn, s.Name) {
+			pin = "pinned"
+		}
+		boring := s.System || s.Objects == 0
+		rows[i] = entry{Key: s.Name, Name: s.Name, Cols: []string{fmtInt(int64(s.Objects)), pin}, Dim: boring,
+			Hidden: boring && pin == "" && s.Name != m.currentSchema && s.Name != m.conn.Profile.Schema}
+	}
+	slices.SortStableFunc(rows, func(a, b entry) int { return strings.Compare(b.Cols[1], a.Cols[1]) })
+	sel, _ := m.schemas.current()
+	m.schemas.set(rows)
+	if sel.Key != "" {
+		m.schemas.selectKey(sel.Key)
+	}
+}
+
+// togglePin pins or unpins the schema under the cursor.
+func (m *model) togglePin() {
+	if m.top() != scrSchemas {
+		m.setStatus("* pins schemas: use it in the schema list", true)
+		return
+	}
+	e, ok := m.schemas.current()
+	if !ok {
+		return
+	}
+	pinned, err := m.state.TogglePin(m.conn.Profile.Name, e.Key)
+	m.showSchemas()
+	m.schemas.scroll(m.listHeight())
+	if err != nil {
+		m.fail("save pin", err)
+		return
+	}
+	if pinned {
+		m.setStatus("pinned "+e.Key+": listed first, never hidden", false)
+	} else {
+		m.setStatus("unpinned "+e.Key, false)
+	}
+}
+
+// toggleHidden shows or hides the system and empty schemas.
+func (m *model) toggleHidden() {
+	if m.top() != scrSchemas {
+		m.setStatus("zh shows hidden schemas: use it in the schema list", true)
+		return
+	}
+	l := &m.schemas
+	if l.hidden() == 0 {
+		m.setStatus("nothing hidden here", false)
+		return
+	}
+	sel, _ := l.current()
+	l.showHidden = !l.showHidden
+	l.refilter()
+	l.selectKey(sel.Key)
+	l.scroll(m.listHeight())
+	m.setStatus(strings.TrimPrefix(m.hiddenNote(), ", "), false)
+}
+
+// hiddenNote tells how many schemas zh would show or hide, "" for none.
+func (m *model) hiddenNote() string {
+	switch n := m.schemas.hidden(); {
+	case n == 0:
+		return ""
+	case m.schemas.showHidden:
+		return fmt.Sprintf(", showing %d system and empty ones (zh hides them)", n)
+	default:
+		return fmt.Sprintf(", %d system or empty ones hidden (zh shows them)", n)
+	}
 }
 
 func (m *model) showTables(schema string, tables []db.Table) {

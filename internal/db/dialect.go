@@ -26,13 +26,17 @@ type dialect struct {
 	queryOnly bool // read-only via PRAGMA query_only instead of a transaction
 	dsn       func(config.Profile) (string, error)
 	args      func(schemaTable ...string) []any
-	schemas   string // "" when the server has a single namespace
-	current   string
-	tables    string
-	columns   string
-	colNames  string // table and column name of every column in a schema, in order
-	contains  string // "%s contains the pattern %s" for a column of any type, ignoring case
-	backslash bool   // backslash escapes inside string literals
+	// schemas lists name, number of tables and views, and 1 for schemas
+	// the server itself owns; "" when the server has a single namespace.
+	schemas string
+	// schemasOld replaces schemas on servers too old for it (Oracle 11g).
+	schemasOld string
+	current    string
+	tables     string
+	columns    string
+	colNames   string // table and column name of every column in a schema, in order
+	contains   string // "%s contains the pattern %s" for a column of any type, ignoring case
+	backslash  bool   // backslash escapes inside string literals
 
 	// searchNames is colNames restricted to columns text can be searched in;
 	// "" when all of them can.
@@ -65,8 +69,11 @@ var dialects = map[string]dialect{
 	config.Postgres: {
 		driver: "pgx", safe: sqlsafe.Postgres, quote: '"', dsn: postgresDSN, args: all,
 		contains: `CAST(%s AS TEXT) ILIKE %s ESCAPE '!'`,
-		schemas: `SELECT nspname FROM pg_namespace WHERE nspname !~ '^pg_(toast|temp)'
-			ORDER BY nspname IN ('pg_catalog', 'information_schema'), nspname`,
+		schemas: `SELECT n.nspname,
+				(SELECT count(*) FROM pg_class c WHERE c.relnamespace = n.oid AND c.relkind IN ('r', 'p', 'v', 'm', 'f')),
+				CASE WHEN n.nspname IN ('pg_catalog', 'information_schema') THEN 1 ELSE 0 END sys
+			FROM pg_namespace n WHERE n.nspname !~ '^pg_(toast|temp)'
+			ORDER BY sys, n.nspname`,
 		current: `SELECT current_schema()`,
 		tables: `SELECT c.relname,
 				CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview' WHEN 'f' THEN 'foreign' ELSE 'table' END,
@@ -93,8 +100,10 @@ var dialects = map[string]dialect{
 	config.MySQL: {
 		driver: "mysql", safe: sqlsafe.MySQL, quote: '`', dsn: mysqlDSN, args: all,
 		contains: `CAST(%s AS CHAR) LIKE %s ESCAPE '!'`, backslash: true,
-		schemas: `SELECT schema_name FROM information_schema.schemata
-			ORDER BY schema_name IN ('information_schema', 'mysql', 'performance_schema', 'sys'), schema_name`,
+		schemas: `SELECT s.schema_name,
+				(SELECT count(*) FROM information_schema.tables t WHERE t.table_schema = s.schema_name),
+				CASE WHEN s.schema_name IN ('information_schema', 'mysql', 'performance_schema', 'sys') THEN 1 ELSE 0 END sys
+			FROM information_schema.schemata s ORDER BY sys, s.schema_name`,
 		current: `SELECT database()`,
 		tables: `SELECT table_name, CASE table_type WHEN 'BASE TABLE' THEN 'table' ELSE lower(table_type) END,
 				coalesce(table_rows, -1)
@@ -108,10 +117,11 @@ var dialects = map[string]dialect{
 	config.Oracle: {
 		driver: "oracle", safe: sqlsafe.Oracle, quote: '"', dsn: oracleDSN, args: all,
 		readTx: "SET TRANSACTION READ ONLY", rownum: true, dateHasTime: true, guardReads: true,
-		retry:    func(err error) bool { return strings.Contains(err.Error(), "ORA-01466") },
-		contains: `UPPER(%s) LIKE UPPER(%s) ESCAPE '!'`,
-		schemas:  `SELECT username FROM all_users ORDER BY CASE WHEN username IN (` + oracleSystem + `) THEN 1 ELSE 0 END, username`,
-		current:  `SELECT sys_context('USERENV', 'CURRENT_SCHEMA') FROM dual`,
+		retry:      func(err error) bool { return strings.Contains(err.Error(), "ORA-01466") },
+		contains:   `UPPER(%s) LIKE UPPER(%s) ESCAPE '!'`,
+		schemas:    oracleSchemas(`OR u.oracle_maintained = 'Y'`),
+		schemasOld: oracleSchemas(""),
+		current:    `SELECT sys_context('USERENV', 'CURRENT_SCHEMA') FROM dual`,
 		tables: `SELECT o.object_name, lower(o.object_type), nvl(t.num_rows, -1)
 			FROM all_objects o
 			LEFT JOIN all_tables t ON t.owner = o.owner AND t.table_name = o.object_name
@@ -172,6 +182,18 @@ func oracleColNames(cond string) string {
 			JOIN all_tab_columns c ON c.owner = s.table_owner AND c.table_name = s.table_name
 			WHERE 1 = 1 ` + cond + `)
 		ORDER BY name, column_id`
+}
+
+// oracleSchemas lists the users with their tables, views and synonyms;
+// system is a further condition for schemas Oracle itself owns.
+func oracleSchemas(system string) string {
+	return `SELECT u.username, nvl(o.n, 0),
+			CASE WHEN u.username IN (` + oracleSystem + `) ` + system + ` THEN 1 ELSE 0 END sys
+		FROM all_users u LEFT JOIN (
+			SELECT owner, count(*) n FROM all_objects
+			WHERE object_type IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW', 'SYNONYM') AND object_name NOT LIKE 'BIN$%'
+			GROUP BY owner) o ON o.owner = u.username
+		ORDER BY sys, u.username`
 }
 
 // oracleSystem lists the schemas Oracle itself owns, which sort last.

@@ -52,15 +52,23 @@ func (m *model) loadTables(schema string) tea.Cmd {
 	}
 }
 
-// loadColNames fetches the schema's column names for sql completion.
+// loadColNames fetches the schema's column names for sql completion. An
+// external editor waiting for them gets its catalog file rewritten at once:
+// dbreader handles no messages until the editor exits.
 func (m *model) loadColNames(schema string) tea.Cmd {
-	conn := m.conn
+	conn, edCatalog := m.conn, &m.edCatalog
+	m.colsLoading = schema
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 		defer cancel()
 		names, err := conn.ColumnNames(ctx, schema)
 		if err != nil {
 			return colNamesMsg{conn: conn, schema: schema, err: err}
+		}
+		if ec := edCatalog.Load(); ec != nil && ec.schema == schema {
+			c := ec.base
+			c.withColumns(names)
+			_ = c.write(ec.path) // gone if the editor has closed meanwhile
 		}
 		search, err := conn.SearchColumns(ctx, schema)
 		return colNamesMsg{conn: conn, schema: schema, names: names, search: search, err: err}
@@ -199,14 +207,7 @@ func (m *model) editSQL() tea.Cmd {
 	_, _ = f.WriteString(before)
 	f.Close()
 
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
-	if editor == "" {
-		editor = "vi"
-	}
-	args := append(strings.Fields(editor), f.Name())
+	args := append(editorCommand(), f.Name())
 	return tea.ExecProcess(exec.Command(args[0], args[1:]...), func(err error) tea.Msg {
 		defer os.Remove(f.Name())
 		if err != nil {

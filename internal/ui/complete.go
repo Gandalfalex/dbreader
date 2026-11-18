@@ -7,6 +7,8 @@ import (
 	"unicode"
 
 	"github.com/Gandalfalex/vim-kit/cmdline"
+
+	"dbreader/internal/sqlsafe"
 )
 
 const maxCompletions = 40
@@ -29,6 +31,16 @@ const (
 	foldLower                 // unquoted names become lower case (PostgreSQL)
 	foldUpper                 // unquoted names become upper case (Oracle)
 )
+
+func foldFor(d sqlsafe.Dialect) foldRule {
+	switch d {
+	case sqlsafe.Postgres:
+		return foldLower
+	case sqlsafe.Oracle:
+		return foldUpper
+	}
+	return foldNone
+}
 
 // needsQuote reports whether name must be quoted to mean itself.
 func (r foldRule) needsQuote(name string) bool {

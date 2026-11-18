@@ -45,14 +45,22 @@ nothing to import or keep in sync:
   With a DBeaver master password set they are not readable; the connections
   still load, without passwords.
 - **Scripts**: `S` lists the SQL files linked to the open connection, then
-  the unlinked ones. A script opens in a small vim-style editor: `i a o`
-  insert with `tab` completion of tables and columns, `x dd yy p u` edit,
-  `v`/`V` select. `:run` (or `:exec`) executes the selection, or without one
-  the statement under the cursor; the status bar names what would run and
-  whether it reads or writes. Writes go through the write guard, one
-  statement at a time. `:w` saves; leaving or quitting saves too.
+  the unlinked ones. `e` opens one in `$VISUAL`/`$EDITOR`; dbreader waits
+  and shows the file again when the editor exits. With vim or neovim the
+  editor starts on the line the cursor was on and dbreader puts the cursor
+  where you left it, so the loop is: `e`, write, `:wq`, `enter`. Tables,
+  columns (`alias.` too) and keywords complete there as in the built-in
+  editor: in neovim through a small language server dbreader starts for
+  the buffer (nvim-cmp, blink and the like show it; without a completion
+  plugin neovim's own popup is turned on), in vim with `ctrl-x ctrl-o`.
+  Columns not loaded yet arrive while the editor is open. `enter`
+  (or `:run`) executes the visual selection, or without one the statement
+  under the cursor; the status bar names what would run and whether it
+  reads or writes. Writes go through the write guard, one statement at a
+  time. Small edits work in place too (`i a o` with `tab` completion,
+  `x dd yy p u`, `v`/`V`, `:w`); leaving or quitting saves them.
 - **New scripts**: `:new <name>` creates `Scripts/<connection>/<name>.sql` in
-  the DBeaver project, where DBeaver shows it as an ordinary script.
+  the DBeaver project and opens it in `$EDITOR` (in place without one), where DBeaver shows it as an ordinary script.
   dbreader does not edit DBeaver's own metadata; the folder name is what
   links the file to the connection here. Connections from settings.json
   keep theirs in `~/.local/share/dbreader/scripts/<connection>/`.
@@ -63,12 +71,22 @@ is found automatically. Otherwise point at it with `-dbeaver <dir>` or
 `"off"` disables the link. settings.json is optional once DBeaver is linked.
 Connections through an SSH tunnel are listed but cannot be opened yet.
 
+## Schemas
+
+Only schemas that hold tables or views and are not the server's own are
+listed; the status bar says how many are hidden, `zh` shows them and a `/`
+filter finds them too. `*` pins a schema: pinned ones come first and are
+never hidden. Pins live in `~/.local/share/dbreader/state.json`. The
+current schema and the profile's `schema` are always shown.
+
 ## Keys
 
 | Where | Keys |
 |---|---|
 | everywhere | `j/k gg/G ^d/^u` move · `:` command line · `s` sql prompt (`tab` completes tables, columns, `alias.`) · `S` scripts · `e` statement in `$EDITOR` · `E` error log · `:help` |
 | lists | `l`/`enter` open · `h` back · `/` filter · `i` table structure · `r` reload |
+| schema list | `*` pin (listed first, kept per connection) · `zh` show the hidden system and empty schemas |
+| script | `enter` run statement or selection · `e` edit in `$EDITOR` · `v`/`V` select |
 | data grid | `h/l 0/$` columns · `enter` row as record · `o` sort by column · `/` filter rows · `y`/`Y` yank cell/row · `-` back |
 
 Commands: `:connect`, `:schema`, `:table`, `:where <cond>`, `:order <col> [desc]`,

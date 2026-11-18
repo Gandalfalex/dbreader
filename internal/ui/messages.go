@@ -18,7 +18,7 @@ type (
 	connMsg struct {
 		op
 		conn    *db.Conn
-		schemas []string
+		schemas []db.Schema
 		current string // schema unqualified names resolve to
 		name    string
 		err     error

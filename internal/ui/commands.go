@@ -26,8 +26,13 @@ func init() {
 	commands = cmdline.Set[*model, tea.Cmd]{
 		{Name: "sql", Args: "<statement>", Desc: "run one statement (writes ask before running)",
 			Run: func(m *model, arg string) tea.Cmd { return m.runTyped(arg) }},
-		{Name: "edit", Aliases: []string{"e"}, Desc: "write a statement in $EDITOR and run it",
-			Run: func(m *model, arg string) tea.Cmd { return m.editSQL() }},
+		{Name: "edit", Aliases: []string{"e"}, Desc: "open the script in $EDITOR; elsewhere write a statement there and run it",
+			Run: func(m *model, arg string) tea.Cmd {
+				if m.top() == scrScript {
+					return m.editScript()
+				}
+				return m.editSQL()
+			}},
 		{Name: "scripts", Desc: "sql scripts linked to this connection",
 			Run: func(m *model, arg string) tea.Cmd { return m.openScripts() }},
 		{Name: "script", Args: "<name>", Desc: "open a sql script", Complete: completeScripts,
@@ -137,10 +142,11 @@ func (m *model) cmdSchema(arg string) tea.Cmd {
 		return nil
 	}
 	m.schemas.setFilter("")
-	if !m.schemas.selectKey(arg) {
+	if !m.schemas.has(arg) {
 		m.setStatus("unknown schema: "+arg, true)
 		return nil
 	}
+	m.schemas.selectKey(arg) // fails for a hidden one, which still opens
 	return m.loadTables(arg)
 }
 

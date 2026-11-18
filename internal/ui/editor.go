@@ -107,6 +107,8 @@ var editActions = map[keys.Action]keyFn{
 		return m, nil // nothing to leave: q or - go back
 	},
 	actBack:       cmd((*model).back),
+	actRun:        cmd((*model).runScript),
+	actEdit:       cmd((*model).editScript),
 	actFilter:     func(m *model, _ keys.Event) (tea.Model, tea.Cmd) { return m.openFind() },
 	actNext:       do(func(m *model, _ keys.Event) { m.findNext(1) }),
 	actPrev:       do(func(m *model, _ keys.Event) { m.findNext(-1) }),
@@ -117,6 +119,7 @@ var editActions = map[keys.Action]keyFn{
 // visualActions apply to the selection.
 var visualActions = map[keys.Action]keyFn{
 	actEsc:        do(func(m *model, _ keys.Event) { m.script.sel.Clear() }),
+	actRun:        editActions[actRun],
 	actVisual:     editActions[actVisual],
 	actVisualLine: editActions[actVisualLine],
 	actFilter:     editActions[actFilter],
@@ -226,7 +229,7 @@ func (m *model) saveScript(force bool) bool {
 		m.setStatus(m.scriptFile.Name+" changed on disk since it was opened: :w! overwrites, :e! reloads", true)
 		return false
 	}
-	if err := writeFile(path, f.text()); err != nil {
+	if err := config.WriteFile(path, f.text()); err != nil {
 		m.fail("save", err)
 		return false
 	}
@@ -251,7 +254,7 @@ func (m *model) keepScript() {
 		return
 	}
 	rescue := m.scriptFile.Path + ".unsaved"
-	if err := writeFile(rescue, f.text()); err != nil {
+	if err := config.WriteFile(rescue, f.text()); err != nil {
 		m.fail("save "+m.scriptFile.Name, err)
 		return
 	}
@@ -259,32 +262,9 @@ func (m *model) keepScript() {
 	m.fail("save "+m.scriptFile.Name, fmt.Errorf("the file changed on disk; your version was written to %s", rescue))
 }
 
-// writeFile replaces path atomically, keeping the mode of an existing file.
-func writeFile(path, text string) error {
-	mode := fs.FileMode(0o644)
-	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode().Perm()
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".dbreader-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name()) // no-op once renamed
-	if _, err := tmp.WriteString(text); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp.Name(), mode); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
-}
-
-// newScript creates an empty script for the open connection and opens it
-// in insert mode. An existing script of that name is opened instead.
+// newScript creates an empty script for the open connection and opens it in
+// $EDITOR, or in insert mode when no editor is set. An existing script of
+// that name is opened instead.
 func (m *model) newScript(name string) tea.Cmd {
 	if !m.needConn() {
 		return nil
@@ -329,6 +309,9 @@ func (m *model) newScript(name string) tea.Cmd {
 	}
 	m.openScript(s)
 	if m.top() == scrScript && m.scriptFile.Path == s.Path {
+		if hasEditor() {
+			return m.editScript()
+		}
 		m.script.startInsert(0)
 		m.setStatus("new script "+s.Path, false)
 	}
