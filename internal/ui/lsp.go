@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf16"
+
+	tk "github.com/Gandalfalex/tuikit"
 )
 
 // ServeLSP is a minimal language server for scripts opened in neovim: it
@@ -252,7 +254,7 @@ func CompleteVim(catalogPath string, in io.Reader, out io.Writer) error {
 		return fmt.Errorf("line %d out of range", line)
 	}
 	l := lines[line-1]
-	items, start := cat.completeAt(text, line-1, runeIndex(l, col))
+	items, start := cat.completeAt(text, line-1, tk.RuneIndex(l, col))
 	w := bufio.NewWriter(out)
 	fmt.Fprintln(w, len(string([]rune(l)[:start])))
 	for _, it := range items {

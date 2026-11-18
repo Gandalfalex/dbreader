@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"dbreader/internal/config"
+
+	tk "github.com/Gandalfalex/tuikit"
 )
 
 // editorHarness is connected and has a script directory to write to.
@@ -37,8 +39,8 @@ func TestWriteNewScript(t *testing.T) {
 	h, dir := editorHarness(t)
 	h.command("new report")
 	path := filepath.Join(dir, "report.sql")
-	if h.m.top() != scrScript || !h.m.script.insert || h.m.scriptFile.Path != path {
-		t.Fatalf("top = %v, insert = %v, status = %q", h.m.top(), h.m.script.insert, h.m.status)
+	if h.m.Stack.Top() != scrScript || !h.m.script.insert || h.m.scriptFile.Path != path {
+		t.Fatalf("top = %v, insert = %v, status = %q", h.m.Stack.Top(), h.m.script.insert, h.m.Status)
 	}
 
 	// typing with completion: table after FROM, column through the alias
@@ -73,8 +75,8 @@ func TestWriteNewScript(t *testing.T) {
 	}
 
 	h.command("run")
-	if h.m.top() != scrData || len(h.m.grid.res.Rows) != 1 || h.m.grid.res.Rows[0][0].S != "ada" {
-		t.Fatalf("run: top = %v, status = %q", h.m.top(), h.m.status)
+	if h.m.Stack.Top() != scrData || len(h.m.grid.res.Rows) != 1 || h.m.grid.res.Rows[0][0].S != "ada" {
+		t.Fatalf("run: top = %v, status = %q", h.m.Stack.Top(), h.m.Status)
 	}
 	if got := readFile(t, path); got != "" {
 		t.Errorf("file written before :w: %q", got)
@@ -82,13 +84,13 @@ func TestWriteNewScript(t *testing.T) {
 	h.press("q")
 	h.command("w")
 	if got, want := readFile(t, path), "select u.name from users u\n  where u.age > 10;\n"; got != want || h.m.script.dirty {
-		t.Fatalf("file = %q, dirty = %v, status = %q", got, h.m.script.dirty, h.m.status)
+		t.Fatalf("file = %q, dirty = %v, status = %q", got, h.m.script.dirty, h.m.Status)
 	}
 
 	// the script is listed for the connection now and next time
 	h.press("S")
-	if len(h.m.scripts.all) != 1 || h.m.scripts.all[0].Name != "report.sql" {
-		t.Errorf("scripts = %+v", h.m.scripts.all)
+	if len(h.m.scripts.All) != 1 || h.m.scripts.All[0].Name != "report.sql" {
+		t.Errorf("scripts = %+v", h.m.scripts.All)
 	}
 	p := config.Profile{Name: "testdb"}
 	p.UseScriptDir(dir)
@@ -111,7 +113,7 @@ func TestScriptSavedOnLeaving(t *testing.T) {
 		h.press("esc")
 		leave(h)
 		if got := readFile(t, filepath.Join(dir, "keep.sql")); got != "select 1;\n" {
-			t.Errorf("%s: file = %q, status = %q", name, got, h.m.status)
+			t.Errorf("%s: file = %q, status = %q", name, got, h.m.Status)
 		}
 	}
 }
@@ -129,8 +131,8 @@ func TestScriptChangedOnDisk(t *testing.T) {
 	os.Chtimes(path, time.Now().Add(time.Hour), time.Now().Add(time.Hour))
 
 	h.command("w")
-	if !h.m.statusErr || readFile(t, path) != "select 2;\n" || !h.m.script.dirty {
-		t.Fatalf(":w overwrote a changed file: status = %q", h.m.status)
+	if !h.m.StatusErr || readFile(t, path) != "select 2;\n" || !h.m.script.dirty {
+		t.Fatalf(":w overwrote a changed file: status = %q", h.m.Status)
 	}
 	h.press("q") // leaving must not overwrite it either, nor drop the text
 	if readFile(t, path) != "select 2;\n" || readFile(t, path+".unsaved") != "select 1;\n" {
@@ -141,8 +143,8 @@ func TestScriptChangedOnDisk(t *testing.T) {
 	h.press("x")
 	os.Chtimes(path, time.Now().Add(2*time.Hour), time.Now().Add(2*time.Hour))
 	h.command("w")
-	if !h.m.statusErr {
-		t.Fatalf("second outside change not noticed: %q", h.m.status)
+	if !h.m.StatusErr {
+		t.Fatalf("second outside change not noticed: %q", h.m.Status)
 	}
 	h.command("w!")
 	if got := readFile(t, path); got != "elect 2;\n" {
@@ -150,8 +152,8 @@ func TestScriptChangedOnDisk(t *testing.T) {
 	}
 	h.press("x")
 	h.command("reload")
-	if !h.m.statusErr || h.buffer() != "lect 2;" {
-		t.Errorf(":reload dropped unsaved edits: %q, status = %q", h.buffer(), h.m.status)
+	if !h.m.StatusErr || h.buffer() != "lect 2;" {
+		t.Errorf(":reload dropped unsaved edits: %q, status = %q", h.buffer(), h.m.Status)
 	}
 	h.command("e!")
 	if h.buffer() != "elect 2;" || h.m.script.dirty {
@@ -258,14 +260,14 @@ func TestExternalEditor(t *testing.T) {
 	if err := os.WriteFile(path, []byte("select 1;\n\nselect name\n  from users;\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	h.m.update(scriptEditedMsg{path: path, line: 4, col: 5})
-	if h.m.top() != scrScript || len(h.m.script.lines) != 4 || h.m.script.Cursor != 3 || h.m.script.col != 4 {
-		t.Fatalf("top = %v, lines = %q, cursor = %d:%d", h.m.top(), h.m.script.lines, h.m.script.Cursor, h.m.script.col)
+	h.m.update(tk.EditedMsg{Path: path, Line: 4, Col: 5})
+	if h.m.Stack.Top() != scrScript || len(h.m.script.lines) != 4 || h.m.script.Cursor != 3 || h.m.script.col != 4 {
+		t.Fatalf("top = %v, lines = %q, cursor = %d:%d", h.m.Stack.Top(), h.m.script.lines, h.m.script.Cursor, h.m.script.col)
 	}
 
 	// enter runs the statement under the cursor
 	h.press("enter")
-	if h.m.top() != scrData || h.m.grid.res == nil || h.m.grid.res.Columns[0] != "name" {
-		t.Fatalf("enter: top = %v, status = %q", h.m.top(), h.m.status)
+	if h.m.Stack.Top() != scrData || h.m.grid.res == nil || h.m.grid.res.Columns[0] != "name" {
+		t.Fatalf("enter: top = %v, status = %q", h.m.Stack.Top(), h.m.Status)
 	}
 }

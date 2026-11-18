@@ -5,17 +5,19 @@ import (
 	"strconv"
 	"strings"
 
+	"dbreader/internal/db"
+
 	tea "charm.land/bubbletea/v2"
 
-	"dbreader/internal/db"
+	tk "github.com/Gandalfalex/tuikit"
 )
 
 func (m *model) open() tea.Cmd {
-	e, ok := m.list().current()
+	e, ok := m.list().Current()
 	if !ok {
 		return nil
 	}
-	switch m.top() {
+	switch m.Stack.Top() {
 	case scrConns:
 		i, _ := strconv.Atoi(e.Key)
 		return m.connect(i)
@@ -27,9 +29,9 @@ func (m *model) open() tea.Cmd {
 		if s, ok := m.findScript(e.Key); ok {
 			m.openScript(s)
 			// found by its content: go to the text that matched
-			if f := m.scripts.filter; f != "" && m.top() == scrScript && !smartMatch(e.Name, f) {
+			if f := m.scripts.Filter; f != "" && m.Stack.Top() == scrScript && !tk.SmartMatch(e.Name, f) {
 				m.script.pattern = f
-				m.script.jump(1, true, m.h-3)
+				m.script.jump(1, true, m.H-3)
 			}
 		}
 	case scrGrep:
@@ -39,19 +41,19 @@ func (m *model) open() tea.Cmd {
 }
 
 func (m *model) back() tea.Cmd {
-	if len(m.stack) == 1 {
-		m.setStatus("at the connection list (q quits)", false)
+	if m.Stack.Len() == 1 {
+		m.SetStatus("at the connection list (q quits)", false)
 		return nil
 	}
-	m.pop()
+	m.Stack.Pop()
 	return nil
 }
 
 // tableHere is the table under the cursor or shown in the grid.
 func (m *model) tableHere() string {
-	switch m.top() {
+	switch m.Stack.Top() {
 	case scrTables:
-		if e, ok := m.tables.current(); ok {
+		if e, ok := m.tables.Current(); ok {
 			return e.Key
 		}
 	case scrData, scrRow:
@@ -65,8 +67,8 @@ func (m *model) tableHere() string {
 func (m *model) openStruct() tea.Cmd {
 	t := m.tableHere()
 	if t == "" {
-		if m.top() == scrData {
-			m.setStatus("structure is available for tables, not for query results", false)
+		if m.Stack.Top() == scrData {
+			m.SetStatus("structure is available for tables, not for query results", false)
 		}
 		return nil
 	}
@@ -100,29 +102,29 @@ func (m *model) sortColumn() tea.Cmd {
 }
 
 func (m *model) cmdYank() tea.Cmd {
-	switch m.top() {
+	switch m.Stack.Top() {
 	case scrData:
 		if m.grid.selecting {
 			return m.yankRows("tsv")
 		}
 		if c, ok := m.grid.cell(); ok {
-			return yank(c.S, m.grid.res.Columns[m.grid.col])
+			return tk.Yank(c.S, m.grid.res.Columns[m.grid.col])
 		}
 	case scrRow:
 		if row, ok := m.grid.row(); ok {
-			return yank(rowJSON(m.grid.res.Columns, row), "row as JSON")
+			return tk.Yank(rowJSON(m.grid.res.Columns, row), "row as JSON")
 		}
 	case scrScript:
 		if f := &m.script; f.sel.Active() {
-			return yank(f.takeSelection(false), "selection")
+			return tk.Yank(f.takeSelection(false), "selection")
 		}
-		return yank(m.script.yankLines(1), "line")
+		return tk.Yank(m.script.yankLines(1), "line")
 	case scrStruct:
-		return yank(m.structOf, "table name")
+		return tk.Yank(m.structOf, "table name")
 	}
 	if l := m.list(); l != nil {
-		if e, ok := l.current(); ok {
-			return yank(e.Name, "name")
+		if e, ok := l.Current(); ok {
+			return tk.Yank(e.Name, "name")
 		}
 	}
 	return nil

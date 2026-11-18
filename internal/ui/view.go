@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"dbreader/internal/sqlsafe"
+	tk "github.com/Gandalfalex/tuikit"
 	"github.com/Gandalfalex/vim-kit/visual"
 )
 
@@ -21,56 +22,41 @@ func (m *model) View() tea.View {
 }
 
 func (m *model) render() string {
-	if m.w == 0 {
+	if m.W == 0 {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString(m.titleBar())
-	b.WriteByte('\n')
-
+	var body string
+	h := m.H - tk.Chrome
 	switch {
 	case m.guarding():
-		b.WriteString(m.renderGuard(m.h - 3))
+		body = m.renderGuard(h)
 	case m.list() != nil:
-		b.WriteString(m.renderList())
-	case m.top() == scrData:
-		b.WriteString(m.renderGrid())
-	case m.top() == scrScript:
-		b.WriteString(m.script.render(m.w, m.h-3))
+		body = m.renderList()
+	case m.Stack.Top() == scrData:
+		body = m.renderGrid()
+	case m.Stack.Top() == scrScript:
+		body = m.script.render(m.W, h)
 	default:
-		b.WriteString(m.vp.View())
-		b.WriteByte('\n')
+		body = m.vp.View()
 	}
-	body := b.String()
 	var popup []string
 	atTop := false
 	switch {
-	case m.mode == inputCommand:
-		popup = m.renderPopup(&m.cmd)
-	case m.mode == inputSQL:
-		popup = m.renderPopup(&m.sqlHist)
-	case m.mode == inputNone && m.top() == scrScript && m.script.insert && !m.guarding():
-		popup = m.renderPopup(&m.edCompl)
+	case m.prompt.Kind == inputCommand:
+		popup = tk.Popup(theme, &m.cmd.Line, m.W, maxPopup)
+	case m.prompt.Kind == inputSQL:
+		popup = tk.Popup(theme, &m.sqlHist, m.W, maxPopup)
+	case m.prompt.Kind == inputNone && m.Stack.Top() == scrScript && m.script.insert && !m.guarding():
+		popup = tk.Popup(theme, &m.edCompl, m.W, maxPopup)
 		// keep the line being typed visible
-		atTop = m.script.Cursor-m.script.Top >= m.h-3-len(popup)
+		atTop = m.script.Cursor-m.script.Top >= h-len(popup)
 	}
-	if len(popup) > 0 {
-		// draw the completion menu over the bottom of the body, like vim's pum
-		lines := strings.Split(strings.TrimSuffix(body, "\n"), "\n")
-		k := min(len(popup), len(lines)-1) // keep the title bar
-		if atTop {
-			copy(lines[1:], popup[:k])
-		} else {
-			copy(lines[len(lines)-k:], popup[len(popup)-k:])
-		}
-		body = strings.Join(lines, "\n") + "\n"
-	}
-	return body + m.statusBar() + "\n" + m.hints()
+	return tk.Frame(m.titleBar(), tk.Overlay(body, popup, atTop), m.statusBar(), m.hints())
 }
 
 // titleBar shows where we are: connection › schema › table.
 func (m *model) titleBar() string {
-	parts := []string{sTitle.Render("dbreader")}
+	var parts []string
 	if m.conn != nil {
 		p := m.conn.Profile
 		name := sCrumb.Render(p.Name)
@@ -81,24 +67,24 @@ func (m *model) titleBar() string {
 			name += sErr.Render(" [protected]")
 		}
 		parts = append(parts, name)
-		if m.schema != "" && m.top() != scrSchemas && m.top() != scrConns {
+		if m.schema != "" && m.Stack.Top() != scrSchemas && m.Stack.Top() != scrConns {
 			parts = append(parts, sCrumb.Render(m.schema))
 		}
 	}
-	switch m.top() {
+	switch m.Stack.Top() {
 	case scrData, scrRow:
 		if b := m.grid.browse; b != nil {
 			parts = append(parts, sDir.Render(b.Table))
 			if b.Where != "" {
-				parts = append(parts, sWarn.Render("where "+clean(b.Where, true)))
+				parts = append(parts, sWarn.Render("where "+tk.CleanLine(b.Where, maxCellBytes)))
 			}
 			if b.Search != "" {
 				parts = append(parts, sWarn.Render("rows containing "+strconv.Quote(b.Search)))
 			}
 		} else {
-			parts = append(parts, sWarn.Render(clean(strings.Join(strings.Fields(m.grid.sql), " "), true)))
+			parts = append(parts, sWarn.Render(tk.CleanLine(strings.Join(strings.Fields(m.grid.sql), " "), maxCellBytes)))
 		}
-		if m.top() == scrRow {
+		if m.Stack.Top() == scrRow {
 			parts = append(parts, sMuted.Render("row "+strconv.Itoa(m.grid.Cursor+1)))
 		}
 	case scrGrep:
@@ -118,70 +104,44 @@ func (m *model) titleBar() string {
 	case scrErrors:
 		parts = append(parts, sErr.Render("error log"))
 	}
-	return ansi.Truncate(strings.Join(parts, sMuted.Render(" › ")), m.w, "…")
+	return tk.TitleBar(theme, m.W, "dbreader", parts...)
 }
 
 func (m *model) renderList() string {
 	l := m.list()
 	h := m.listHeight()
-	l.scroll(h)
-
-	var b strings.Builder
 	var header string
-	nameW := m.w - 2
-	switch m.top() {
+	nameW := m.W - 2
+	switch m.Stack.Top() {
 	case scrConns:
-		header = pad("CONNECTION", 26) + pad("DRIVER", 10) + "TARGET"
+		header = tk.Pad("CONNECTION", 26) + tk.Pad("DRIVER", 10) + "TARGET"
 	case scrSchemas:
-		nameW = max(20, m.w-2-10-8)
-		header = pad("SCHEMA", nameW) + padLeft("OBJECTS", 8)
+		nameW = max(20, m.W-2-10-8)
+		header = tk.Pad("SCHEMA", nameW) + tk.PadLeft("OBJECTS", 8)
 	case scrTables:
-		nameW = max(20, m.w-2-10-14)
-		header = pad("TABLE", nameW) + pad("TYPE", 10) + padLeft("ROWS", 13)
+		nameW = max(20, m.W-2-10-14)
+		header = tk.Pad("TABLE", nameW) + tk.Pad("TYPE", 10) + tk.PadLeft("ROWS", 13)
 	case scrGrep:
-		nameW = max(20, m.w-2-14)
-		header = pad("TABLE", nameW) + padLeft("MATCHING ROWS", 13)
+		nameW = max(20, m.W-2-14)
+		header = tk.Pad("TABLE", nameW) + tk.PadLeft("MATCHING ROWS", 13)
 	case scrScripts:
-		nameW = max(20, m.w-2-24)
-		header = pad("SCRIPT", nameW) + "LINKED TO"
+		nameW = max(20, m.W-2-24)
+		header = tk.Pad("SCRIPT", nameW) + "LINKED TO"
 	}
-	b.WriteString(sHeader.Render(ansi.Truncate("  "+header, m.w, "")))
-	b.WriteByte('\n')
-
-	lines := 0
-	if len(l.vis) == 0 {
-		msg := "  (empty)"
-		if l.filter != "" {
-			msg = "  no matches for filter: " + l.filter
-		}
-		if m.loading {
-			msg = "  " + m.spin.View() + " " + m.what
-		}
-		b.WriteString(sMuted.Render(msg))
-		b.WriteByte('\n')
-		lines++
+	empty := ""
+	if m.Ops.Loading() {
+		empty = m.Ops.Spinner()
 	}
-	for i := l.Top; i < len(l.vis) && i < l.Top+h; i++ {
-		row := m.renderRow(l.all[l.vis[i]], nameW)
-		if i == l.Cursor {
-			row = sSel.Render(pad("▌ "+ansi.Strip(row), m.w))
-		} else {
-			row = "  " + row
-		}
-		b.WriteString(ansi.Truncate(row, m.w, ""))
-		b.WriteByte('\n')
-		lines++
-	}
-	for ; lines < h; lines++ {
-		b.WriteString(sMuted.Render("~"))
-		b.WriteByte('\n')
-	}
-	return b.String()
+	return l.View(theme, m.W, h, tk.ListView[entry]{
+		Header: header,
+		Row:    func(e entry, _ int) string { return m.renderRow(e, nameW) },
+		Empty:  empty,
+	})
 }
 
 func (m *model) renderRow(e entry, nameW int) string {
-	name := clean(e.Name, true)
-	switch m.top() {
+	name := tk.CleanLine(e.Name, maxCellBytes)
+	switch m.Stack.Top() {
 	case scrConns:
 		i, _ := strconv.Atoi(e.Key)
 		p := m.settings.Profiles[i]
@@ -201,28 +161,28 @@ func (m *model) renderRow(e entry, nameW int) string {
 		case p.Protect:
 			tags += sErr.Render("  protected")
 		}
-		target := truncLeft(p.Target(), max(12, m.w-2-36-lipgloss.Width(tags)))
-		return pad(name, 26) + sMuted.Render(pad(p.Driver, 10)+target) + tags
+		target := tk.TruncLeft(p.Target(), max(12, m.W-2-36-lipgloss.Width(tags)))
+		return tk.Pad(name, 26) + sMuted.Render(tk.Pad(p.Driver, 10)+target) + tags
 	case scrGrep:
-		return pad(name, nameW) + sWarn.Render(padLeft(e.Cols[0], 13))
+		return tk.Pad(name, nameW) + sWarn.Render(tk.PadLeft(e.Cols[0], 13))
 	case scrScripts:
-		row := pad(name, nameW)
+		row := tk.Pad(name, nameW)
 		if e.Dim {
 			return sMuted.Render(row + e.Cols[0])
 		}
 		return row + sCrumb.Render(e.Cols[0])
 	case scrSchemas:
-		row := pad(name, nameW) + padLeft(e.Cols[0], 8)
+		row := tk.Pad(name, nameW) + tk.PadLeft(e.Cols[0], 8)
 		if e.Dim {
 			row = sMuted.Render(row)
 		}
 		return row + sOK.Render("  "+e.Cols[1])
 	case scrTables:
-		row := pad(name, nameW)
+		row := tk.Pad(name, nameW)
 		if e.Dim {
 			row = sMuted.Render(row)
 		}
-		return row + sMuted.Render(pad(e.Cols[0], 10)+padLeft(e.Cols[1], 13))
+		return row + sMuted.Render(tk.Pad(e.Cols[0], 10)+tk.PadLeft(e.Cols[1], 13))
 	}
 	if e.Dim {
 		return sMuted.Render(name)
@@ -242,7 +202,7 @@ func (m *model) renderGrid() string {
 		return b.String()
 	}
 	g.Scroll(len(g.vis), h)
-	avail := m.w - 2
+	avail := m.W - 2
 	g.scrollCols(avail)
 
 	// columns that fit, the last one possibly cut short
@@ -256,14 +216,14 @@ func (m *model) renderGrid() string {
 	gap := strings.Repeat(" ", colGap)
 	fit := func(s string, c column) string {
 		if g.numeric[c.i] {
-			return padLeft(s, c.w)
+			return tk.PadLeft(s, c.w)
 		}
-		return pad(s, c.w)
+		return tk.Pad(s, c.w)
 	}
 
 	b.WriteString("  ")
 	for _, c := range cols {
-		name := clean(g.res.Columns[c.i], true)
+		name := tk.CleanLine(g.res.Columns[c.i], maxCellBytes)
 		switch {
 		case g.browse != nil && g.browse.Order == g.res.Columns[c.i]:
 			name += sortArrow(g.browse.Desc)
@@ -302,7 +262,7 @@ func (m *model) renderGrid() string {
 		}
 		for _, c := range cols {
 			cell := row[c.i]
-			text := fit(clean(cell.S, true), c)
+			text := fit(tk.CleanLine(cell.S, maxCellBytes), c)
 			if cell.Null {
 				text = fit("NULL", c)
 			}
@@ -320,10 +280,10 @@ func (m *model) renderGrid() string {
 			}
 			used += c.w + colGap
 		}
-		if (cur || picked) && used < m.w {
-			line.WriteString(sSel.Render(strings.Repeat(" ", m.w-used)))
+		if (cur || picked) && used < m.W {
+			line.WriteString(sSel.Render(strings.Repeat(" ", m.W-used)))
 		}
-		b.WriteString(ansi.Truncate(line.String(), m.w, ""))
+		b.WriteString(ansi.Truncate(line.String(), m.W, ""))
 		b.WriteByte('\n')
 		lines++
 	}
@@ -368,60 +328,39 @@ func sortArrow(desc bool) string {
 }
 
 func (m *model) statusBar() string {
-	modeName, modeColor := "NORMAL", cAccent
-	switch m.mode {
-	case inputFilter:
-		modeName, modeColor = "FILTER", cOK
-	case inputSQL:
-		modeName, modeColor = "SQL", cWarn
-	case inputCommand:
-		modeName, modeColor = "COMMAND", cDir
-	case inputConfirm:
-		modeName, modeColor = "CONFIRM", cErr
-	case inputFind, inputSearch:
-		modeName, modeColor = "SEARCH", cWarn
+	mode := tk.ModeNormal
+	if m.prompt.Active() {
+		mode = m.prompt.Mode
 	}
-	if m.mode == inputNone && m.top() == scrData && m.grid.selecting && !m.guarding() {
-		modeName, modeColor = "V-LINE", cWarn
+	if m.prompt.Kind == inputNone && m.Stack.Top() == scrData && m.grid.selecting && !m.guarding() {
+		mode = tk.ModeVLine
 	}
 	if m.pending != nil {
-		modeName, modeColor = "TXN OPEN", cErr
+		mode = modeTxn
 	}
-	if m.mode == inputNone && m.top() == scrScript && !m.guarding() {
+	if m.prompt.Kind == inputNone && m.Stack.Top() == scrScript && !m.guarding() {
 		switch {
 		case m.script.insert:
-			modeName, modeColor = "INSERT", cOK
+			mode = tk.ModeInsert
 		case m.script.sel.Mode == visual.Char:
-			modeName, modeColor = "VISUAL", cWarn
+			mode = tk.ModeVisual
 		case m.script.sel.Mode == visual.Line:
-			modeName, modeColor = "V-LINE", cWarn
+			mode = tk.ModeVLine
 		}
 	}
-	if m.mode != inputNone {
-		left := sMode.Background(modeColor).Render(modeName) + " "
-		return left + ansi.Truncate(m.input.View(), m.w-lipgloss.Width(left), "")
+	if m.prompt.Active() {
+		return tk.PromptBar(theme, m.W, mode, m.prompt.Input)
 	}
 
-	left := sMode.Background(modeColor).Render(modeName)
 	var mid []string
-	if m.loading {
-		mid = append(mid, m.spin.View()+" "+m.what)
-	}
 	switch l := m.list(); {
 	case m.guarding():
 	case l != nil:
-		pos := 0
-		if len(l.vis) > 0 {
-			pos = l.Cursor + 1
+		mid = append(mid, l.Position()...)
+		if l.Filter != "" {
+			mid = append(mid, sOK.Render("/"+l.Filter))
 		}
-		mid = append(mid, fmt.Sprintf("%d/%d", pos, len(l.vis)))
-		if len(l.vis) != len(l.all) {
-			mid = append(mid, fmt.Sprintf("(of %d)", len(l.all)))
-		}
-		if l.filter != "" {
-			mid = append(mid, sOK.Render("/"+l.filter))
-		}
-	case m.top() == scrData && m.grid.res != nil:
+	case m.Stack.Top() == scrData && m.grid.res != nil:
 		g := &m.grid
 		pos := 0
 		if len(g.vis) > 0 {
@@ -436,7 +375,7 @@ func (m *model) statusBar() string {
 			mid = append(mid, fmt.Sprintf("(of %d)", len(g.res.Rows)))
 		}
 		if g.col < len(g.res.Columns) {
-			col := fmt.Sprintf("col %d/%d %s", g.col+1, len(g.res.Columns), clean(g.res.Columns[g.col], true))
+			col := fmt.Sprintf("col %d/%d %s", g.col+1, len(g.res.Columns), tk.CleanLine(g.res.Columns[g.col], maxCellBytes))
 			if t := g.res.Types[g.col]; t != "" {
 				col += " " + sMuted.Render(strings.ToLower(t))
 			}
@@ -452,7 +391,7 @@ func (m *model) statusBar() string {
 			from, to := g.selRange()
 			mid = append(mid, sWarn.Render(fmt.Sprintf("%d rows selected", to-from+1)))
 		}
-	case m.top() == scrScript:
+	case m.Stack.Top() == scrScript:
 		f := &m.script
 		mid = append(mid, fmt.Sprintf("%d/%d", f.Cursor+1, len(f.lines)), fmt.Sprintf("col %d", f.col+1))
 		if f.pattern != "" {
@@ -462,43 +401,28 @@ func (m *model) statusBar() string {
 			mid = append(mid, ":run → "+what+": "+m.runKinds(text))
 		}
 	default:
-		mid = append(mid, fmt.Sprintf("%3.0f%%", m.vp.ScrollPercent()*100))
+		mid = append(mid, m.vp.Percent())
 	}
-	if n := len(m.errs); n > 0 && m.top() != scrErrors {
-		mid = append(mid, sErr.Render(fmt.Sprintf("E:%d", n)))
-	}
-	if p := m.keys.Partial(); p != "" {
-		mid = append(mid, sWarn.Render(p))
-	}
-	if m.status != "" {
-		st := m.status
-		if m.statusErr {
-			st = sErr.Render(st)
-		}
-		mid = append(mid, st)
-	}
-	line := left + " " + strings.Join(mid, sMuted.Render(" │ "))
-	line = ansi.Truncate(line, m.w, "…")
-	return sBar.Render(pad(line, m.w))
+	return tk.StatusBar(theme, m.W, mode, m.StatusParts(mid, m.Stack.Top() == scrErrors))
 }
 
 func (m *model) hints() string {
 	var h string
 	switch {
-	case m.mode == inputCommand:
+	case m.prompt.Kind == inputCommand:
 		h = "tab/S-tab complete · ↑↓ history · enter run · esc cancel"
-	case m.mode == inputConfirm:
+	case m.prompt.Kind == inputConfirm:
 		h = "enter execute · esc cancel"
-	case m.mode == inputFind:
+	case m.prompt.Kind == inputFind:
 		h = "enter keep · esc back to where you were · then n / N next and previous match"
-	case m.mode == inputSearch:
+	case m.prompt.Kind == inputSearch:
 		h = "enter search on the server · esc cancel"
-	case m.mode == inputSQL:
+	case m.prompt.Kind == inputSQL:
 		h = "tab/S-tab complete · ↑↓ history · enter run · esc cancel · reads run at once, writes ask first"
 	case m.pending != nil:
 		h = "c commit · r roll back · ctrl+c roll back and quit"
 	default:
-		switch m.top() {
+		switch m.Stack.Top() {
 		case scrConns:
 			h = "j/k move · l/enter connect · / filter · : command · :help · q quit"
 		case scrSchemas:
@@ -530,5 +454,5 @@ func (m *model) hints() string {
 			h = "j/k scroll · G newest · q back · full log: " + m.logPath
 		}
 	}
-	return sMuted.Render(ansi.Truncate(" "+h, m.w, "…"))
+	return tk.HintBar(theme, m.W, h)
 }

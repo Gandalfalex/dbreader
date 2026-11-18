@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"sort"
 	"strconv"
 	"strings"
 
@@ -28,7 +27,7 @@ func init() {
 			Run: func(m *model, arg string) tea.Cmd { return m.runTyped(arg) }},
 		{Name: "edit", Aliases: []string{"e"}, Desc: "open the script in $EDITOR; elsewhere write a statement there and run it",
 			Run: func(m *model, arg string) tea.Cmd {
-				if m.top() == scrScript {
+				if m.Stack.Top() == scrScript {
 					return m.editScript()
 				}
 				return m.editSQL()
@@ -76,11 +75,11 @@ func init() {
 		{Name: "grep", Aliases: []string{"search"}, Args: "<text>", Desc: "rows containing the text: in the open table, else in every table of the schema",
 			Run: func(m *model, arg string) tea.Cmd {
 				m.popPages()
-				if m.top() == scrData && m.grid.browse != nil {
+				if m.Stack.Top() == scrData && m.grid.browse != nil {
 					return m.search(arg)
 				}
 				if arg == "" {
-					m.setStatus("usage: :grep <text>", true)
+					m.SetStatus("usage: :grep <text>", true)
 					return nil
 				}
 				return m.startGrep(arg)
@@ -98,7 +97,7 @@ func init() {
 
 func (m *model) needConn() bool {
 	if m.conn == nil {
-		m.setStatus("not connected (:connect <name>)", true)
+		m.SetStatus("not connected (:connect <name>)", true)
 		return false
 	}
 	return true
@@ -106,26 +105,26 @@ func (m *model) needConn() bool {
 
 // needTable returns the table the grid shows, for commands that refine it.
 func (m *model) needTable() (db.Browse, bool) {
-	if (m.top() == scrData || m.top() == scrRow) && m.grid.browse != nil {
+	if (m.Stack.Top() == scrData || m.Stack.Top() == scrRow) && m.grid.browse != nil {
 		return *m.grid.browse, true
 	}
-	m.setStatus("open a table first (query results: put it in the statement)", true)
+	m.SetStatus("open a table first (query results: put it in the statement)", true)
 	return db.Browse{}, false
 }
 
 func (m *model) cmdConnect(arg string) tea.Cmd {
 	if arg == "" {
-		m.stack = m.stack[:1]
+		m.Stack.Reset()
 		return nil
 	}
 	for i, p := range m.settings.Profiles {
 		if p.Name == arg {
-			m.conns.setFilter("")
-			m.conns.selectKey(strconv.Itoa(i))
+			m.conns.SetFilter("")
+			m.conns.Select(strconv.Itoa(i))
 			return m.connect(i)
 		}
 	}
-	m.setStatus("unknown connection: "+arg, true)
+	m.SetStatus("unknown connection: "+arg, true)
 	return nil
 }
 
@@ -134,19 +133,19 @@ func (m *model) cmdSchema(arg string) tea.Cmd {
 		return nil
 	}
 	if !m.conn.HasSchemas() {
-		m.setStatus(m.conn.Profile.Driver+" has no schemas", false)
+		m.SetStatus(m.conn.Profile.Driver+" has no schemas", false)
 		return nil
 	}
 	if arg == "" {
-		m.popTo(scrSchemas)
+		m.Stack.PopTo(scrSchemas)
 		return nil
 	}
-	m.schemas.setFilter("")
-	if !m.schemas.has(arg) {
-		m.setStatus("unknown schema: "+arg, true)
+	m.schemas.SetFilter("")
+	if !m.schemas.Has(arg) {
+		m.SetStatus("unknown schema: "+arg, true)
 		return nil
 	}
-	m.schemas.selectKey(arg) // fails for a hidden one, which still opens
+	m.schemas.Select(arg) // fails for a hidden one, which still opens
 	return m.loadTables(arg)
 }
 
@@ -155,8 +154,8 @@ func (m *model) cmdTable(arg string) tea.Cmd {
 		return nil
 	}
 	if arg == "" {
-		if !m.popTo(scrTables) {
-			m.setStatus("pick a schema first", true)
+		if !m.Stack.PopTo(scrTables) {
+			m.SetStatus("pick a schema first", true)
 		}
 		return nil
 	}
@@ -164,7 +163,7 @@ func (m *model) cmdTable(arg string) tea.Cmd {
 	if s, t, ok := strings.Cut(arg, "."); ok && m.conn.HasSchemas() {
 		schema, arg = s, t
 	}
-	m.tables.selectKey(arg)
+	m.tables.Select(arg)
 	return m.browse(db.Browse{Schema: schema, Table: arg})
 }
 
@@ -194,15 +193,15 @@ func (m *model) cmdOrder(arg string) tea.Cmd {
 func (m *model) cmdLimit(arg string) tea.Cmd {
 	n, err := strconv.Atoi(arg)
 	if err != nil || n < 1 {
-		m.setStatus("usage: :limit <rows>  (now "+strconv.Itoa(m.limit)+")", true)
+		m.SetStatus("usage: :limit <rows>  (now "+strconv.Itoa(m.limit)+")", true)
 		return nil
 	}
 	m.limit = n
 	m.popPages()
-	if m.top() == scrData {
+	if m.Stack.Top() == scrData {
 		return m.reload()
 	}
-	m.setStatus("limit "+strconv.Itoa(n), false)
+	m.SetStatus("limit "+strconv.Itoa(n), false)
 	return nil
 }
 
@@ -215,8 +214,8 @@ func completeConns(m *model, arg string) []complItem {
 }
 
 func (m *model) cmdWrite(force bool) tea.Cmd {
-	if !m.onStack(scrScript) {
-		m.setStatus("no script open", true)
+	if !m.Stack.Has(scrScript) {
+		m.SetStatus("no script open", true)
 		return nil
 	}
 	m.saveScript(force)
@@ -224,8 +223,8 @@ func (m *model) cmdWrite(force bool) tea.Cmd {
 }
 
 func (m *model) cmdRevert() tea.Cmd {
-	if m.top() != scrScript {
-		m.setStatus("no script open", true)
+	if m.Stack.Top() != scrScript {
+		m.SetStatus("no script open", true)
 		return nil
 	}
 	m.script.dirty = false
@@ -242,7 +241,7 @@ func (m *model) cmdScript(arg string) tea.Cmd {
 	}
 	s, ok := m.findScript(arg)
 	if !ok {
-		m.setStatus("unknown script: "+arg, true)
+		m.SetStatus("unknown script: "+arg, true)
 		return nil
 	}
 	m.openScript(s)
@@ -263,7 +262,7 @@ func completeScripts(m *model, arg string) []complItem {
 
 func completeSchemas(m *model, arg string) []complItem {
 	var items []complItem
-	for _, e := range m.schemas.all {
+	for _, e := range m.schemas.All {
 		items = append(items, complItem{Value: e.Name, Label: e.Name})
 	}
 	return cmdline.Match(items, arg)
@@ -271,7 +270,7 @@ func completeSchemas(m *model, arg string) []complItem {
 
 func completeTables(m *model, arg string) []complItem {
 	var items []complItem
-	for _, e := range m.tables.all {
+	for _, e := range m.tables.All {
 		items = append(items, complItem{Value: e.Name, Label: e.Name, Desc: strings.Join(e.Cols, "  ")})
 	}
 	return cmdline.Match(items, arg)
@@ -295,28 +294,4 @@ func completeColumns(m *model, arg string) []complItem {
 		items[i].Value = head + items[i].Value
 	}
 	return items
-}
-
-// computeCompletions builds the popup for the current command-line text.
-func (m *model) computeCompletions(input string) []complItem {
-	return commands.Complete(m, input)
-}
-
-// commandHelp lists commands for the help screen.
-func commandHelp() string {
-	cs := append([]command(nil), commands...)
-	sort.Slice(cs, func(i, j int) bool { return cs[i].Name < cs[j].Name })
-	var b strings.Builder
-	for _, c := range cs {
-		label := ":" + c.Name
-		if c.Args != "" {
-			label += " " + c.Args
-		}
-		alias := ""
-		if len(c.Aliases) > 0 {
-			alias = " (:" + strings.Join(c.Aliases, ", :") + ")"
-		}
-		b.WriteString("    " + pad(label, 26) + c.Desc + alias + "\n")
-	}
-	return b.String()
 }

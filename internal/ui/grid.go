@@ -6,11 +6,12 @@ import (
 	"strconv"
 	"strings"
 
+	"dbreader/internal/db"
+
+	tk "github.com/Gandalfalex/tuikit"
 	"github.com/Gandalfalex/vim-kit/keys"
 	"github.com/Gandalfalex/vim-kit/motion"
 	"github.com/charmbracelet/x/ansi"
-
-	"dbreader/internal/db"
 )
 
 const (
@@ -48,12 +49,12 @@ func newGrid(res *db.Result, sql string, browse *db.Browse) grid {
 	g.widths = make([]int, len(res.Columns))
 	g.numeric = make([]bool, len(res.Columns))
 	for i, c := range res.Columns {
-		g.widths[i] = max(minColWidth, ansi.StringWidth(clean(c, true)))
+		g.widths[i] = max(minColWidth, ansi.StringWidth(tk.CleanLine(c, maxCellBytes)))
 		g.numeric[i] = isNumeric(res.Types[i])
 	}
 	for _, row := range res.Rows[:min(len(res.Rows), widthSample)] {
 		for i, c := range row {
-			if w := ansi.StringWidth(clean(c.S, true)); w > g.widths[i] {
+			if w := ansi.StringWidth(tk.CleanLine(c.S, maxCellBytes)); w > g.widths[i] {
 				g.widths[i] = min(w, maxColWidth)
 			}
 		}
@@ -90,7 +91,7 @@ func (g *grid) refilter() {
 
 func rowMatches(row []db.Cell, f string) bool {
 	for _, c := range row {
-		if smartMatch(c.S, f) {
+		if tk.SmartMatch(c.S, f) {
 			return true
 		}
 	}

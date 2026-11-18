@@ -34,11 +34,11 @@ type editorCatalog struct {
 // column names have loaded.
 func (m *model) catalogFile(schema string) catalogFile {
 	c := catalogFile{Driver: m.conn.Profile.Driver, Quote: m.conn.QuoteChar()}
-	for _, e := range m.schemas.all {
+	for _, e := range m.schemas.All {
 		c.Schemas = append(c.Schemas, e.Name)
 	}
 	if m.schema == schema {
-		for _, e := range m.tables.all {
+		for _, e := range m.tables.All {
 			c.Tables = append(c.Tables, e.Name)
 		}
 	}

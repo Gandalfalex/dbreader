@@ -98,7 +98,7 @@ func (h *harness) press(keys ...string) {
 			msg = tea.KeyPressMsg{Code: []rune(rest)[0], Mod: tea.ModCtrl}
 		}
 		_, cmd := h.m.Update(msg)
-		if h.m.loading {
+		if h.m.Ops.Loading() {
 			h.pump(cmd)
 		}
 	}
@@ -114,8 +114,8 @@ func (h *harness) typeText(s string) {
 func (h *harness) sql(stmt string) {
 	h.t.Helper()
 	h.press("s")
-	if h.m.mode != inputSQL {
-		h.t.Fatalf("sql prompt did not open (status %q)", h.m.status)
+	if h.m.prompt.Kind != inputSQL {
+		h.t.Fatalf("sql prompt did not open (status %q)", h.m.Status)
 	}
 	h.typeText(stmt)
 	h.press("enter")
@@ -135,20 +135,20 @@ func (h *harness) screen() string { return ansi.Strip(h.m.render()) }
 func (h *harness) connect() {
 	h.t.Helper()
 	h.press("enter")
-	if h.m.conn == nil || h.m.top() != scrTables {
-		h.t.Fatalf("not on the table list: top = %v, status = %q", h.m.top(), h.m.status)
+	if h.m.conn == nil || h.m.Stack.Top() != scrTables {
+		h.t.Fatalf("not on the table list: top = %v, status = %q", h.m.Stack.Top(), h.m.Status)
 	}
 }
 
 func TestBrowse(t *testing.T) {
 	h := newHarness(t, nil)
 	h.connect()
-	if got := len(h.m.tables.all); got != 2 {
+	if got := len(h.m.tables.All); got != 2 {
 		t.Fatalf("tables = %d, want 2", got)
 	}
 	h.press("j", "enter") // logs, users
-	if h.m.top() != scrData || h.m.grid.browse == nil || h.m.grid.browse.Table != "users" {
-		t.Fatalf("top = %v, grid = %+v", h.m.top(), h.m.grid.browse)
+	if h.m.Stack.Top() != scrData || h.m.grid.browse == nil || h.m.grid.browse.Table != "users" {
+		t.Fatalf("top = %v, grid = %+v", h.m.Stack.Top(), h.m.grid.browse)
 	}
 	out := h.screen()
 	for _, want := range []string{"ada", "bob", "NULL", "testdb", "users"} {
@@ -166,12 +166,12 @@ func TestBrowse(t *testing.T) {
 	}
 
 	h.press("enter")
-	if h.m.top() != scrRow || !strings.Contains(h.screen(), "ada") {
+	if h.m.Stack.Top() != scrRow || !strings.Contains(h.screen(), "ada") {
 		t.Errorf("record view missing:\n%s", h.screen())
 	}
 	h.press("q", "q", "h")
-	if h.m.top() != scrConns {
-		t.Errorf("top = %v after going back, want the connection list", h.m.top())
+	if h.m.Stack.Top() != scrConns {
+		t.Errorf("top = %v after going back, want the connection list", h.m.Stack.Top())
 	}
 }
 
@@ -182,8 +182,8 @@ func TestReadRunsWithoutAsking(t *testing.T) {
 	if h.m.guarding() {
 		t.Fatal("a SELECT was held for confirmation")
 	}
-	if h.m.top() != scrData || len(h.m.grid.res.Rows) != 1 {
-		t.Fatalf("top = %v, status = %q", h.m.top(), h.m.status)
+	if h.m.Stack.Top() != scrData || len(h.m.grid.res.Rows) != 1 {
+		t.Fatalf("top = %v, status = %q", h.m.Stack.Top(), h.m.Status)
 	}
 }
 
@@ -218,15 +218,15 @@ func TestWriteNeedsConfirmAndCommit(t *testing.T) {
 	h.typeText("yes")
 	h.press("enter")
 	if h.m.pending == nil || h.m.pending.Affected != 1 {
-		t.Fatalf("pending = %+v, status = %q", h.m.pending, h.m.status)
+		t.Fatalf("pending = %+v, status = %q", h.m.pending, h.m.Status)
 	}
 	if out := h.screen(); !strings.Contains(out, "NOT COMMITTED") || !strings.Contains(out, "1 row affected") {
 		t.Errorf("commit screen:\n%s", out)
 	}
 	// other keys do nothing while the transaction is open
 	h.press("q", "j", "enter", "esc", ":", "s", "y")
-	if h.m.pending == nil || h.m.mode != inputNone {
-		t.Fatalf("a key escaped the open transaction: pending = %v, mode = %v", h.m.pending, h.m.mode)
+	if h.m.pending == nil || h.m.prompt.Kind != inputNone {
+		t.Fatalf("a key escaped the open transaction: pending = %v, mode = %v", h.m.pending, h.m.prompt.Kind)
 	}
 	h.press("r")
 	if h.m.pending != nil || h.count() != "3" {
@@ -237,7 +237,7 @@ func TestWriteNeedsConfirmAndCommit(t *testing.T) {
 	h.typeText("yes")
 	h.press("enter", "c")
 	if h.m.pending != nil || h.count() != "2" {
-		t.Fatalf("commit: pending = %v, count = %s, status = %q", h.m.pending, h.count(), h.m.status)
+		t.Fatalf("commit: pending = %v, count = %s, status = %q", h.m.pending, h.count(), h.m.Status)
 	}
 }
 
@@ -282,8 +282,8 @@ func TestReadOnlyProfile(t *testing.T) {
 	h := newHarness(t, func(p *config.Profile) { p.ReadOnly = true })
 	h.connect()
 	h.sql("delete from users where id = 1")
-	if h.m.guarding() || !h.m.statusErr || !strings.Contains(h.m.status, "read-only") {
-		t.Fatalf("guarding = %v, status = %q", h.guarding(), h.m.status)
+	if h.m.guarding() || !h.m.StatusErr || !strings.Contains(h.m.Status, "read-only") {
+		t.Fatalf("guarding = %v, status = %q", h.guarding(), h.m.Status)
 	}
 	if h.count() != "3" {
 		t.Fatalf("count = %s", h.count())
@@ -295,14 +295,14 @@ func TestRefusals(t *testing.T) {
 	h.connect()
 	for _, stmt := range []string{"commit", "begin", "select 1; delete from users"} {
 		h.sql(stmt)
-		if h.m.guarding() || !h.m.statusErr {
-			t.Errorf("%q: guarding = %v, status = %q", stmt, h.guarding(), h.m.status)
+		if h.m.guarding() || !h.m.StatusErr {
+			t.Errorf("%q: guarding = %v, status = %q", stmt, h.guarding(), h.m.Status)
 		}
 	}
 	// a write disguised well enough to fool the classifier would still hit
 	// the read-only connection; simulate the misjudgement directly
 	h.pump(h.m.query("delete from users"))
-	if h.count() != "3" || len(h.m.errs) == 0 {
+	if h.count() != "3" || h.m.Errors.Len() == 0 {
 		t.Fatalf("write ran on the read path: count = %s", h.count())
 	}
 }
@@ -344,30 +344,30 @@ func TestServerNavigation(t *testing.T) {
 	h.m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	h.press("enter")
-	if h.m.top() != scrSchemas {
-		t.Fatalf("top = %v, status = %q", h.m.top(), h.m.status)
+	if h.m.Stack.Top() != scrSchemas {
+		t.Fatalf("top = %v, status = %q", h.m.Stack.Top(), h.m.Status)
 	}
-	if e, _ := h.m.schemas.current(); e.Name != "public" {
+	if e, _ := h.m.schemas.Current(); e.Name != "public" {
 		t.Errorf("cursor on schema %q, want public", e.Name)
 	}
 	h.typeText(":schema pg_catalog")
 	h.press("enter")
-	if h.m.top() != scrTables || h.m.schema != "pg_catalog" || len(h.m.tables.all) < 50 {
-		t.Fatalf("top = %v, schema = %q, tables = %d", h.m.top(), h.m.schema, len(h.m.tables.all))
+	if h.m.Stack.Top() != scrTables || h.m.schema != "pg_catalog" || len(h.m.tables.All) < 50 {
+		t.Fatalf("top = %v, schema = %q, tables = %d", h.m.Stack.Top(), h.m.schema, len(h.m.tables.All))
 	}
 	h.typeText(":table pg_class")
 	h.press("enter")
 	g := h.m.grid
-	if h.m.top() != scrData || len(g.res.Rows) != 5 || !g.res.Truncated {
-		t.Fatalf("top = %v, status = %q", h.m.top(), h.m.status)
+	if h.m.Stack.Top() != scrData || len(g.res.Rows) != 5 || !g.res.Truncated {
+		t.Fatalf("top = %v, status = %q", h.m.Stack.Top(), h.m.Status)
 	}
 	h.typeText(":where relname = 'pg_class'")
 	h.press("enter")
 	if n := len(h.m.grid.res.Rows); n != 1 {
-		t.Fatalf("rows = %d after :where, status = %q", n, h.m.status)
+		t.Fatalf("rows = %d after :where, status = %q", n, h.m.Status)
 	}
 	h.press("i")
-	if h.m.top() != scrStruct || !strings.Contains(h.screen(), "relname") {
+	if h.m.Stack.Top() != scrStruct || !strings.Contains(h.screen(), "relname") {
 		t.Errorf("structure page:\n%s", h.screen())
 	}
 }
@@ -393,12 +393,12 @@ func scriptHarness(t *testing.T) *harness {
 	h.m.settings.Scripts = []config.Script{{Name: "scratch.sql", Path: file}}
 	h.connect()
 	h.press("S")
-	if h.m.top() != scrScripts || len(h.m.scripts.all) != 2 {
-		t.Fatalf("top = %v, scripts = %d, status = %q", h.m.top(), len(h.m.scripts.all), h.m.status)
+	if h.m.Stack.Top() != scrScripts || len(h.m.scripts.All) != 2 {
+		t.Fatalf("top = %v, scripts = %d, status = %q", h.m.Stack.Top(), len(h.m.scripts.All), h.m.Status)
 	}
 	h.press("enter")
-	if h.m.top() != scrScript || len(h.m.script.lines) != 7 || len(h.m.script.spans) != 4 {
-		t.Fatalf("top = %v, script = %+v", h.m.top(), h.m.script)
+	if h.m.Stack.Top() != scrScript || len(h.m.script.lines) != 7 || len(h.m.script.spans) != 4 {
+		t.Fatalf("top = %v, script = %+v", h.m.Stack.Top(), h.m.script)
 	}
 	return h
 }
@@ -417,19 +417,19 @@ func TestScriptRunStatementUnderCursor(t *testing.T) {
 			t.Errorf("script screen lacks %q:\n%s", want, out)
 		}
 	}
-	if h.m.confirm != nil || h.m.loading {
+	if h.m.confirm != nil || h.m.Ops.Loading() {
 		t.Fatal("opening a script ran something")
 	}
 
 	// anywhere in the statement, :run takes all of it and nothing more
 	h.press("j", "j", "$")
 	h.command("run")
-	if h.m.top() != scrData || len(h.m.grid.res.Rows) != 1 || h.m.grid.res.Rows[0][0].S != "ada" {
-		t.Fatalf("top = %v, status = %q", h.m.top(), h.m.status)
+	if h.m.Stack.Top() != scrData || len(h.m.grid.res.Rows) != 1 || h.m.grid.res.Rows[0][0].S != "ada" {
+		t.Fatalf("top = %v, status = %q", h.m.Stack.Top(), h.m.Status)
 	}
 	h.press("q")
-	if h.m.top() != scrScript || h.m.script.Cursor != 2 {
-		t.Fatalf("top = %v, cursor = %d; want back in the script on line 3", h.m.top(), h.m.script.Cursor)
+	if h.m.Stack.Top() != scrScript || h.m.script.Cursor != 2 {
+		t.Fatalf("top = %v, cursor = %d; want back in the script on line 3", h.m.Stack.Top(), h.m.script.Cursor)
 	}
 
 	// the blank line belongs to the statement below it
@@ -463,8 +463,8 @@ func TestScriptRunSelection(t *testing.T) {
 		t.Errorf("no VISUAL badge:\n%s", h.screen())
 	}
 	h.command("run")
-	if h.m.top() != scrData || len(h.m.grid.res.Rows) != 3 {
-		t.Fatalf("top = %v, rows = %v, status = %q", h.m.top(), h.m.grid.res, h.m.status)
+	if h.m.Stack.Top() != scrData || len(h.m.grid.res.Rows) != 3 {
+		t.Fatalf("top = %v, rows = %v, status = %q", h.m.Stack.Top(), h.m.grid.res, h.m.Status)
 	}
 	h.press("q")
 	if h.m.script.sel.Active() {
@@ -488,7 +488,7 @@ func TestScriptRunSelection(t *testing.T) {
 	}
 	h.press("c")
 	if c := h.m.confirm; c == nil || c.stmt.Text != "insert into logs values ('a;b')" || h.count() != "2" {
-		t.Fatalf("second confirm = %+v, count = %s, status = %q", h.m.confirm, h.count(), h.m.status)
+		t.Fatalf("second confirm = %+v, count = %s, status = %q", h.m.confirm, h.count(), h.m.Status)
 	}
 	h.typeText("yes")
 	h.press("enter", "c")
@@ -525,8 +525,8 @@ func TestScriptRunStopsOnRefusal(t *testing.T) {
 	h.m.script = newFileView("select * from nope;\ndelete from users where id = 1;\n", h.m.conn.Dialect())
 	h.press("V", "G")
 	h.command("run")
-	if h.guarding() || len(h.m.queue) != 0 || len(h.m.errs) != 1 {
-		t.Errorf("after a failed read: guarding = %v, queue = %v, errs = %d", h.guarding(), h.m.queue, len(h.m.errs))
+	if h.guarding() || len(h.m.queue) != 0 || h.m.Errors.Len() != 1 {
+		t.Errorf("after a failed read: guarding = %v, queue = %v, errs = %d", h.guarding(), h.m.queue, h.m.Errors.Len())
 	}
 }
 
@@ -534,8 +534,8 @@ func TestRunOutsideScript(t *testing.T) {
 	h := newHarness(t, nil)
 	h.connect()
 	h.command("run")
-	if !h.m.statusErr || h.m.loading || h.guarding() {
-		t.Fatalf("status = %q", h.m.status)
+	if !h.m.StatusErr || h.m.Ops.Loading() || h.guarding() {
+		t.Fatalf("status = %q", h.m.Status)
 	}
 }
 
@@ -554,31 +554,31 @@ func TestSQLPromptCompletion(t *testing.T) {
 		t.Errorf("popup not drawn:\n%s", h.screen())
 	}
 	h.press("tab")
-	if got := h.m.input.Value(); got != "select u. from users" {
+	if got := h.m.prompt.Input.Value(); got != "select u. from users" {
 		t.Fatalf("after tab: %q", got)
 	}
 	h.typeText(" u")
 	// back to the dot, where the alias now resolves
-	h.m.input.SetCursor(len("select u."))
+	h.m.prompt.Input.SetCursor(len("select u."))
 	h.typeText("a")
 	h.press("tab")
-	if got := h.m.input.Value(); got != "select u.age from users u" {
+	if got := h.m.prompt.Input.Value(); got != "select u.age from users u" {
 		t.Fatalf("column completion: %q", got)
 	}
-	if pos := h.m.input.Position(); pos != len("select u.age") {
+	if pos := h.m.prompt.Input.Position(); pos != len("select u.age") {
 		t.Errorf("cursor at %d, want it after the completed word", pos)
 	}
 	h.press("enter")
-	if h.m.top() != scrData || len(h.m.grid.res.Rows) != 3 {
-		t.Fatalf("top = %v, status = %q", h.m.top(), h.m.status)
+	if h.m.Stack.Top() != scrData || len(h.m.grid.res.Rows) != 3 {
+		t.Fatalf("top = %v, status = %q", h.m.Stack.Top(), h.m.Status)
 	}
 }
 
 func TestBlockedConnection(t *testing.T) {
 	h := newHarness(t, func(p *config.Profile) { p.Blocked = "it connects through an ssh tunnel" })
 	h.press("enter")
-	if h.m.conn != nil || !h.m.statusErr || !strings.Contains(h.m.status, "ssh tunnel") {
-		t.Fatalf("conn = %v, status = %q", h.m.conn, h.m.status)
+	if h.m.conn != nil || !h.m.StatusErr || !strings.Contains(h.m.Status, "ssh tunnel") {
+		t.Fatalf("conn = %v, status = %q", h.m.conn, h.m.Status)
 	}
 }
 
@@ -595,23 +595,23 @@ func TestServerOracle(t *testing.T) {
 	h.m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 
 	h.press("enter")
-	if h.m.top() != scrSchemas {
-		t.Fatalf("top = %v, status = %q", h.m.top(), h.m.status)
+	if h.m.Stack.Top() != scrSchemas {
+		t.Fatalf("top = %v, status = %q", h.m.Stack.Top(), h.m.Status)
 	}
-	if e, _ := h.m.schemas.current(); e.Name != "APP" {
+	if e, _ := h.m.schemas.Current(); e.Name != "APP" {
 		t.Fatalf("cursor on schema %q, want APP", e.Name)
 	}
 	h.press("enter")
 	have := map[string]bool{}
-	for _, e := range h.m.tables.all {
+	for _, e := range h.m.tables.All {
 		have[e.Name] = true
 	}
 	for _, want := range []string{"CUSTOMERS", "ORDERS", "ATTACHMENTS", "MixedCase", "OPEN_ORDERS"} {
 		if !have[want] {
-			t.Fatalf("table %s missing: %+v, status = %q", want, h.m.tables.all, h.m.status)
+			t.Fatalf("table %s missing: %+v, status = %q", want, h.m.tables.All, h.m.Status)
 		}
 	}
-	for _, e := range h.m.tables.all {
+	for _, e := range h.m.tables.All {
 		if e.Name == "OPEN_ORDERS" && (e.Cols[0] != "view" || !e.Dim) {
 			t.Errorf("view listed as %+v", e)
 		}
@@ -620,8 +620,8 @@ func TestServerOracle(t *testing.T) {
 	// the rows page is cut at the limit with ROWNUM, values of every type are readable
 	h.command("table CUSTOMERS")
 	g := h.m.grid
-	if h.m.top() != scrData || len(g.res.Rows) != 2 || !g.res.Truncated {
-		t.Fatalf("top = %v, rows = %v, status = %q", h.m.top(), g.res, h.m.status)
+	if h.m.Stack.Top() != scrData || len(g.res.Rows) != 2 || !g.res.Truncated {
+		t.Fatalf("top = %v, rows = %v, status = %q", h.m.Stack.Top(), g.res, h.m.Status)
 	}
 	h.command("limit 10")
 	g = h.m.grid
@@ -635,7 +635,7 @@ func TestServerOracle(t *testing.T) {
 		t.Errorf("DATE shows no time of day: %q", date)
 	}
 	h.press("i") // structure, with defaults read from a LONG column
-	if out := h.screen(); h.m.top() != scrStruct || !strings.Contains(out, "VARCHAR2(100)") || !strings.Contains(out, "SYSDATE") || !strings.Contains(out, "PK") {
+	if out := h.screen(); h.m.Stack.Top() != scrStruct || !strings.Contains(out, "VARCHAR2(100)") || !strings.Contains(out, "SYSDATE") || !strings.Contains(out, "PK") {
 		t.Errorf("structure page:\n%s", out)
 	}
 	h.press("q", "q")
@@ -655,12 +655,12 @@ func TestServerOracle(t *testing.T) {
 	h.typeText("NEVER EMAIL") // inside the CLOB, any case
 	h.press("enter")
 	if rows := h.m.grid.res.Rows; len(rows) != 1 || rows[0][1].S != "Cy Young" {
-		t.Fatalf("search in a CLOB: %v, status = %q", rows, h.m.status)
+		t.Fatalf("search in a CLOB: %v, status = %q", rows, h.m.Status)
 	}
 	h.press("q")
 	h.command("grep ada")
-	if h.m.top() != scrGrep || len(h.m.grep.all) != 1 || h.m.grep.all[0].Name != "CUSTOMERS" || h.m.grepFailed != 0 { // LOB and raw columns are skipped, not errors
-		t.Fatalf("grep: hits = %+v, failed = %d, status = %q", h.m.grep.all, h.m.grepFailed, h.m.status)
+	if h.m.Stack.Top() != scrGrep || len(h.m.grep.All) != 1 || h.m.grep.All[0].Name != "CUSTOMERS" || h.m.grepFailed != 0 { // LOB and raw columns are skipped, not errors
+		t.Fatalf("grep: hits = %+v, failed = %d, status = %q", h.m.grep.All, h.m.grepFailed, h.m.Status)
 	}
 	h.press("esc")
 
@@ -671,13 +671,13 @@ func TestServerOracle(t *testing.T) {
 		t.Fatalf("completion = %+v", h.m.sqlHist.Items)
 	}
 	h.press("tab", "enter")
-	if h.m.top() != scrData || len(h.m.grid.res.Rows) != 1 || h.m.grid.res.Rows[0][0].S != "a" {
-		t.Fatalf("quoted table: top = %v, status = %q", h.m.top(), h.m.status)
+	if h.m.Stack.Top() != scrData || len(h.m.grid.res.Rows) != 1 || h.m.grid.res.Rows[0][0].S != "a" {
+		t.Fatalf("quoted table: top = %v, status = %q", h.m.Stack.Top(), h.m.Status)
 	}
 	h.press("q")
 	h.sql("select name from customers where id = 1")
-	if h.m.top() != scrData || h.m.grid.res.Rows[0][0].S != "Ada Lovelace" {
-		t.Fatalf("unquoted names: status = %q", h.m.status)
+	if h.m.Stack.Top() != scrData || h.m.grid.res.Rows[0][0].S != "Ada Lovelace" {
+		t.Fatalf("unquoted names: status = %q", h.m.Status)
 	}
 	h.press("q")
 
@@ -696,7 +696,7 @@ func TestServerOracle(t *testing.T) {
 	h.typeText("yes")
 	h.press("enter")
 	if h.m.pending == nil || h.m.pending.Affected != 1 {
-		t.Fatalf("pending = %+v, status = %q", h.m.pending, h.m.status)
+		t.Fatalf("pending = %+v, status = %q", h.m.pending, h.m.Status)
 	}
 	h.press("r")
 	if count() != "1" {

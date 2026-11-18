@@ -6,27 +6,24 @@ import (
 	"slices"
 	"strings"
 
-	"charm.land/bubbles/v2/spinner"
-	tea "charm.land/bubbletea/v2"
-
 	"dbreader/internal/config"
 	"dbreader/internal/db"
+
+	tea "charm.land/bubbletea/v2"
+
+	tk "github.com/Gandalfalex/tuikit"
 )
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if r, ok := msg.(opResult); ok && r.opGen() != m.gen {
+	if m.Ops.Stale(msg) {
 		return m, discard(msg) // result of a superseded or cancelled operation
 	}
-	editing := m.script.dirty && m.onStack(scrScript)
+	editing := m.script.dirty && m.Stack.Has(scrScript)
 	cmd := m.update(msg)
-	if editing && !m.onStack(scrScript) {
+	if editing && !m.Stack.Has(scrScript) {
 		m.keepScript() // whatever closed the script, its text is not lost
 	}
-	if m.loading && !m.spinning {
-		m.spinning = true
-		cmd = tea.Batch(cmd, m.spin.Tick)
-	}
-	return m, cmd
+	return m, tea.Batch(cmd, m.Ops.Tick())
 }
 
 // discard releases what a dropped result holds: a write nobody will get to
@@ -47,30 +44,18 @@ func discard(msg tea.Msg) tea.Cmd {
 }
 
 func (m *model) update(msg tea.Msg) tea.Cmd {
+	if cmd, ok := m.Shell.Update(msg); ok {
+		return cmd
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.w, m.h = msg.Width, msg.Height
-		m.input.SetWidth(max(10, m.w-16))
-		m.vp.SetWidth(m.w)
-		m.vp.SetHeight(max(1, m.h-3))
+		m.prompt.Input.SetWidth(max(10, m.W-16))
+		m.vp.Resize(m.W, m.H)
 		m.refreshViewport()
 		return nil
 
-	case spinner.TickMsg:
-		if !m.loading {
-			m.spinning = false
-			return nil
-		}
-		var cmd tea.Cmd
-		m.spin, cmd = m.spin.Update(msg)
-		return cmd
-
-	case statusMsg:
-		m.setStatus(string(msg), false)
-		return nil
-
 	case connMsg:
-		m.done()
+		m.Ops.Done()
 		if msg.err != nil {
 			m.fail("connect "+msg.name, msg.err)
 			return nil
@@ -78,7 +63,7 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		return m.connected(msg)
 
 	case tablesMsg:
-		m.done()
+		m.Ops.Done()
 		if msg.err != nil {
 			m.fail("list tables", msg.err)
 			return nil
@@ -99,13 +84,13 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		}
 		m.colNames, m.searchCols, m.colSchema = msg.names, msg.search, msg.schema
 		if msg.schema == m.schema { // let the table filter find columns too
-			for i := range m.tables.all {
-				e := &m.tables.all[i]
+			for i := range m.tables.All {
+				e := &m.tables.All[i]
 				e.Text = strings.Join(msg.names[e.Key], " ")
 			}
-			sel, _ := m.tables.current()
-			m.tables.refilter()
-			m.tables.selectKey(sel.Key)
+			sel, _ := m.tables.Current()
+			m.tables.Refilter()
+			m.tables.Select(sel.Key)
 		}
 		return nil
 
@@ -113,7 +98,7 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		return m.grepResult(msg)
 
 	case dataMsg:
-		m.done()
+		m.Ops.Done()
 		if msg.err != nil {
 			m.fail("query", msg.err)
 			return nil
@@ -122,7 +107,7 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		return m.runNext()
 
 	case structMsg:
-		m.done()
+		m.Ops.Done()
 		if msg.err != nil {
 			m.fail("structure of "+msg.table, msg.err)
 			return nil
@@ -132,7 +117,7 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		return nil
 
 	case execMsg:
-		m.done()
+		m.Ops.Done()
 		if msg.err != nil {
 			m.fail("execute", msg.err)
 			return nil
@@ -144,7 +129,7 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		return m.finished(msg.pending, true)
 
 	case finishMsg:
-		m.done()
+		m.Ops.Done()
 		m.pending = nil
 		if msg.err != nil {
 			what := "rollback"
@@ -156,7 +141,7 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		}
 		return m.finished(msg.pending, msg.committed)
 
-	case scriptEditedMsg:
+	case tk.EditedMsg:
 		m.scriptEdited(msg)
 		return nil
 
@@ -172,16 +157,16 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		return cmd
 
 	case tea.PasteMsg:
-		if m.mode == inputNone && m.top() == scrScript && m.script.insert && !m.guarding() {
+		if m.prompt.Kind == inputNone && m.Stack.Top() == scrScript && m.script.insert && !m.guarding() {
 			m.script.insertText(msg.Content)
 			m.edCompl.SetItems(nil)
 			return nil
 		}
 	}
 
-	if m.mode != inputNone {
+	if m.prompt.Kind != inputNone {
 		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
+		m.prompt.Input, cmd = m.prompt.Input.Update(msg)
 		return cmd
 	}
 	return nil
@@ -197,23 +182,23 @@ func (m *model) connected(msg connMsg) tea.Cmd {
 	if m.limit = p.Limit; m.limit <= 0 {
 		m.limit = config.DefaultLimit
 	}
-	m.stack = m.stack[:1]
-	m.tables, m.grid, m.colNames, m.searchCols, m.colsLoading = listState{}, grid{}, nil, nil, ""
+	m.Stack.Reset()
+	m.tables, m.grid, m.colNames, m.searchCols, m.colsLoading = newList(), grid{}, nil, nil, ""
 
-	m.schemas = listState{}
+	m.schemas = newList()
 	m.schemaInfo, m.currentSchema = msg.schemas, msg.current
 	m.showSchemas()
 	if !msg.conn.HasSchemas() {
 		return m.loadTables("")
 	}
-	m.push(scrSchemas)
+	m.Stack.Push(scrSchemas)
 	if p.Schema != "" {
-		m.schemas.selectKey(p.Schema)
+		m.schemas.Select(p.Schema)
 		return m.loadTables(p.Schema)
 	}
-	m.schemas.selectKey(msg.current)
-	m.schemas.scroll(m.listHeight())
-	m.setStatus(fmt.Sprintf("%d schemas%s", len(m.schemas.all), m.hiddenNote()), false)
+	m.schemas.Select(msg.current)
+	m.schemas.Scroll(m.listHeight())
+	m.SetStatus(fmt.Sprintf("%d schemas%s", len(m.schemas.All), m.hiddenNote()), false)
 	return nil
 }
 
@@ -229,66 +214,66 @@ func (m *model) showSchemas() {
 			pin = "pinned"
 		}
 		boring := s.System || s.Objects == 0
-		rows[i] = entry{Key: s.Name, Name: s.Name, Cols: []string{fmtInt(int64(s.Objects)), pin}, Dim: boring,
+		rows[i] = entry{Key: s.Name, Name: s.Name, Cols: []string{tk.FmtInt(int64(s.Objects)), pin}, Dim: boring,
 			Hidden: boring && pin == "" && s.Name != m.currentSchema && s.Name != m.conn.Profile.Schema}
 	}
 	slices.SortStableFunc(rows, func(a, b entry) int { return strings.Compare(b.Cols[1], a.Cols[1]) })
-	sel, _ := m.schemas.current()
-	m.schemas.set(rows)
+	sel, _ := m.schemas.Current()
+	m.schemas.Set(rows)
 	if sel.Key != "" {
-		m.schemas.selectKey(sel.Key)
+		m.schemas.Select(sel.Key)
 	}
 }
 
 // togglePin pins or unpins the schema under the cursor.
 func (m *model) togglePin() {
-	if m.top() != scrSchemas {
-		m.setStatus("* pins schemas: use it in the schema list", true)
+	if m.Stack.Top() != scrSchemas {
+		m.SetStatus("* pins schemas: use it in the schema list", true)
 		return
 	}
-	e, ok := m.schemas.current()
+	e, ok := m.schemas.Current()
 	if !ok {
 		return
 	}
 	pinned, err := m.state.TogglePin(m.conn.Profile.Name, e.Key)
 	m.showSchemas()
-	m.schemas.scroll(m.listHeight())
+	m.schemas.Scroll(m.listHeight())
 	if err != nil {
 		m.fail("save pin", err)
 		return
 	}
 	if pinned {
-		m.setStatus("pinned "+e.Key+": listed first, never hidden", false)
+		m.SetStatus("pinned "+e.Key+": listed first, never hidden", false)
 	} else {
-		m.setStatus("unpinned "+e.Key, false)
+		m.SetStatus("unpinned "+e.Key, false)
 	}
 }
 
 // toggleHidden shows or hides the system and empty schemas.
 func (m *model) toggleHidden() {
-	if m.top() != scrSchemas {
-		m.setStatus("zh shows hidden schemas: use it in the schema list", true)
+	if m.Stack.Top() != scrSchemas {
+		m.SetStatus("zh shows hidden schemas: use it in the schema list", true)
 		return
 	}
 	l := &m.schemas
-	if l.hidden() == 0 {
-		m.setStatus("nothing hidden here", false)
+	if l.HiddenCount() == 0 {
+		m.SetStatus("nothing hidden here", false)
 		return
 	}
-	sel, _ := l.current()
-	l.showHidden = !l.showHidden
-	l.refilter()
-	l.selectKey(sel.Key)
-	l.scroll(m.listHeight())
-	m.setStatus(strings.TrimPrefix(m.hiddenNote(), ", "), false)
+	sel, _ := l.Current()
+	l.ShowHidden = !l.ShowHidden
+	l.Refilter()
+	l.Select(sel.Key)
+	l.Scroll(m.listHeight())
+	m.SetStatus(strings.TrimPrefix(m.hiddenNote(), ", "), false)
 }
 
 // hiddenNote tells how many schemas zh would show or hide, "" for none.
 func (m *model) hiddenNote() string {
-	switch n := m.schemas.hidden(); {
+	switch n := m.schemas.HiddenCount(); {
 	case n == 0:
 		return ""
-	case m.schemas.showHidden:
+	case m.schemas.ShowHidden:
 		return fmt.Sprintf(", showing %d system and empty ones (zh hides them)", n)
 	default:
 		return fmt.Sprintf(", %d system or empty ones hidden (zh shows them)", n)
@@ -300,27 +285,27 @@ func (m *model) showTables(schema string, tables []db.Table) {
 	for i, t := range tables {
 		est := ""
 		if t.Rows >= 0 {
-			est = "~" + fmtInt(t.Rows)
+			est = "~" + tk.FmtInt(t.Rows)
 		}
 		rows[i] = entry{Key: t.Name, Name: t.Name, Cols: []string{t.Kind, est}, Dim: t.Kind != "table"}
 	}
 	sel := ""
-	if e, ok := m.tables.current(); ok && schema == m.schema {
+	if e, ok := m.tables.Current(); ok && schema == m.schema {
 		sel = e.Key // reload: stay on the same table
 	}
-	filter := m.tables.filter
+	filter := m.tables.Filter
 	m.schema = schema
-	m.tables = listState{}
-	m.tables.set(rows)
-	if !m.popTo(scrTables) {
-		m.popTo(scrSchemas)
-		m.stack = m.stack[:min(len(m.stack), 2)]
-		m.push(scrTables)
+	m.tables = newList()
+	m.tables.Set(rows)
+	if !m.Stack.PopTo(scrTables) {
+		m.Stack.PopTo(scrSchemas)
+		m.Stack.Keep(2)
+		m.Stack.Push(scrTables)
 	} else if sel != "" {
-		m.tables.setFilter(filter)
-		m.tables.selectKey(sel)
+		m.tables.SetFilter(filter)
+		m.tables.Select(sel)
 	}
-	m.setStatus(fmt.Sprintf("%d tables", len(rows)), false)
+	m.SetStatus(fmt.Sprintf("%d tables", len(rows)), false)
 }
 
 // showData puts a result on the grid screen, replacing the one shown. A
@@ -340,14 +325,14 @@ func (m *model) showData(msg dataMsg) {
 		g.Clamp(len(g.vis))
 	}
 	// replace the grid on screen; from a script, put the result on top of it
-	if m.popPages(); m.top() != scrData {
-		m.push(scrData)
+	if m.popPages(); m.Stack.Top() != scrData {
+		m.Stack.Push(scrData)
 	}
-	n := fmtInt(int64(len(msg.res.Rows)))
+	n := tk.FmtInt(int64(len(msg.res.Rows)))
 	if msg.res.Truncated {
 		n += "+"
 	}
-	m.setStatus(fmt.Sprintf("%s rows in %s", n, fmtDur(msg.res.Took)), false)
+	m.SetStatus(fmt.Sprintf("%s rows in %s", n, tk.FmtDur(msg.res.Took)), false)
 }
 
 // sameView reports whether b shows the same table or query as a, possibly
@@ -367,7 +352,7 @@ func (m *model) finished(p *db.Pending, committed bool) tea.Cmd {
 	if !committed {
 		slog.Info("rolled back", "sql", p.Stmt.Text)
 		m.queue = nil
-		m.setStatus("rolled back, nothing changed", false)
+		m.SetStatus("rolled back, nothing changed", false)
 		return nil
 	}
 	slog.Info("committed", "sql", p.Stmt.Text, "affected", p.Affected)
@@ -375,19 +360,19 @@ func (m *model) finished(p *db.Pending, committed bool) tea.Cmd {
 	if p.Stmt.NoTx {
 		note = "executed"
 	}
-	status := fmt.Sprintf("%s: %s, %s rows affected", note, p.Stmt.Verb, fmtInt(p.Affected))
+	status := fmt.Sprintf("%s: %s, %s rows affected", note, p.Stmt.Verb, tk.FmtInt(p.Affected))
 	if len(m.queue) > 0 {
-		m.setStatus(status, false)
+		m.SetStatus(status, false)
 		return m.runNext()
 	}
 	var cmd tea.Cmd
-	if m.top() == scrData || m.top() == scrTables {
+	if m.Stack.Top() == scrData || m.Stack.Top() == scrTables {
 		cmd = m.reload()
 	}
-	m.setStatus(status, false)
+	m.SetStatus(status, false)
 	if cmd != nil {
 		// the reload's own status would hide the outcome of the write
-		return tea.Sequence(cmd, func() tea.Msg { return statusMsg(status) })
+		return tea.Sequence(cmd, func() tea.Msg { return tk.StatusMsg(status) })
 	}
 	return nil
 }

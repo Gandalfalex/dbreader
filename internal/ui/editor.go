@@ -10,13 +10,14 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"dbreader/internal/config"
+
 	tea "charm.land/bubbletea/v2"
 
+	tk "github.com/Gandalfalex/tuikit"
 	"github.com/Gandalfalex/vim-kit/cmdline"
 	"github.com/Gandalfalex/vim-kit/keys"
 	"github.com/Gandalfalex/vim-kit/visual"
-
-	"dbreader/internal/config"
 )
 
 // Editing actions of the script screen; the text operations themselves are
@@ -88,19 +89,19 @@ var editActions = map[keys.Action]keyFn{
 	}),
 	actChangeLine: edit(func(f *fileView, ev keys.Event) { f.changeLines(f.Cursor, f.Cursor+ev.Count-1) }),
 	actYankLine: func(m *model, ev keys.Event) (tea.Model, tea.Cmd) {
-		return m, yank(m.script.yankLines(ev.Count), "line")
+		return m, tk.Yank(m.script.yankLines(ev.Count), "line")
 	},
 	actPaste:       edit(func(f *fileView, _ keys.Event) { f.paste(false) }),
 	actPasteBefore: edit(func(f *fileView, _ keys.Event) { f.paste(true) }),
 	actJoin:        edit(func(f *fileView, _ keys.Event) { f.join() }),
 	actUndo: do(func(m *model, _ keys.Event) {
 		if !m.script.undoStep() {
-			m.setStatus("already at oldest change", false)
+			m.SetStatus("already at oldest change", false)
 		}
 	}),
 	actRedo: do(func(m *model, _ keys.Event) {
 		if !m.script.redoStep() {
-			m.setStatus("already at newest change", false)
+			m.SetStatus("already at newest change", false)
 		}
 	}),
 	actEsc: func(m *model, _ keys.Event) (tea.Model, tea.Cmd) {
@@ -126,7 +127,7 @@ var visualActions = map[keys.Action]keyFn{
 	actNext:       editActions[actNext],
 	actPrev:       editActions[actPrev],
 	actYank: func(m *model, _ keys.Event) (tea.Model, tea.Cmd) {
-		return m, yank(m.script.takeSelection(false), "selection")
+		return m, tk.Yank(m.script.takeSelection(false), "selection")
 	},
 	actDelete: edit(func(f *fileView, _ keys.Event) { f.takeSelection(true) }),
 	actChange: edit(func(f *fileView, _ keys.Event) {
@@ -226,7 +227,7 @@ func (m *model) saveScript(force bool) bool {
 		m.fail("save", err)
 		return false
 	case err == nil && !force && !info.ModTime().Equal(f.mtime):
-		m.setStatus(m.scriptFile.Name+" changed on disk since it was opened: :w! overwrites, :e! reloads", true)
+		m.SetStatus(m.scriptFile.Name+" changed on disk since it was opened: :w! overwrites, :e! reloads", true)
 		return false
 	}
 	if err := config.WriteFile(path, f.text()); err != nil {
@@ -237,7 +238,7 @@ func (m *model) saveScript(force bool) bool {
 		f.mtime = info.ModTime()
 	}
 	f.dirty = false
-	m.setStatus(fmt.Sprintf("%s written, %d lines", m.scriptFile.Name, len(f.lines)), false)
+	m.SetStatus(fmt.Sprintf("%s written, %d lines", m.scriptFile.Name, len(f.lines)), false)
 	return true
 }
 
@@ -272,13 +273,13 @@ func (m *model) newScript(name string) tea.Cmd {
 	dir := m.conn.Profile.ScriptDir
 	switch {
 	case name == "":
-		m.setStatus("usage: :new <name>", true)
+		m.SetStatus("usage: :new <name>", true)
 		return nil
 	case dir == "":
-		m.setStatus("this connection has no script directory", true)
+		m.SetStatus("this connection has no script directory", true)
 		return nil
 	case name != filepath.Base(name) || strings.HasPrefix(name, "."):
-		m.setStatus("script name must be a plain file name", true)
+		m.SetStatus("script name must be a plain file name", true)
 		return nil
 	}
 	if filepath.Ext(name) == "" {
@@ -308,12 +309,12 @@ func (m *model) newScript(name string) tea.Cmd {
 		}
 	}
 	m.openScript(s)
-	if m.top() == scrScript && m.scriptFile.Path == s.Path {
-		if hasEditor() {
+	if m.Stack.Top() == scrScript && m.scriptFile.Path == s.Path {
+		if tk.HasEditor() {
 			return m.editScript()
 		}
 		m.script.startInsert(0)
-		m.setStatus("new script "+s.Path, false)
+		m.SetStatus("new script "+s.Path, false)
 	}
 	return nil
 }

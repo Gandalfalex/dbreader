@@ -6,12 +6,13 @@ import (
 	"strconv"
 	"strings"
 
+	"dbreader/internal/db"
+
 	tea "charm.land/bubbletea/v2"
 
+	tk "github.com/Gandalfalex/tuikit"
 	"github.com/Gandalfalex/vim-kit/keys"
 	"github.com/Gandalfalex/vim-kit/visual"
-
-	"dbreader/internal/db"
 )
 
 const (
@@ -86,41 +87,35 @@ func (f *fileView) jump(dir int, here bool, h int) bool {
 }
 
 func (m *model) openFind() (tea.Model, tea.Cmd) {
-	m.mode = inputFind
 	m.findFrom = m.script.pos()
 	m.prevFilter = m.script.pattern
-	m.input.Prompt = "/"
-	m.input.Placeholder = "search in this script (smart-case; n / N for the next and previous match)"
-	m.input.SetValue("")
-	return m, m.input.Focus()
+	return m, m.prompt.Open(inputFind, tk.ModeSearch, "/", "search in this script (smart-case; n / N for the next and previous match)", "")
 }
 
 func (m *model) findNext(dir int) {
 	f := &m.script
 	switch {
 	case f.pattern == "":
-		m.setStatus("no search pattern (/ starts one)", false)
-	case !f.jump(dir, false, m.h-3):
-		m.setStatus("pattern not found: "+f.pattern, true)
+		m.SetStatus("no search pattern (/ starts one)", false)
+	case !f.jump(dir, false, m.H-3):
+		m.SetStatus("pattern not found: "+f.pattern, true)
 	}
 }
 
 // ---- ? : search on the server ----
 
 func (m *model) openSearch() (tea.Model, tea.Cmd) {
+	var placeholder string
 	switch {
-	case m.top() == scrTables || m.top() == scrGrep:
-		m.input.Placeholder = "search every table of " + m.schemaLabel() + " for rows containing this text"
-	case m.top() == scrData && m.grid.browse != nil:
-		m.input.Placeholder = "search all rows of " + m.grid.browse.Table + " on the server, any column (empty clears)"
+	case m.Stack.Top() == scrTables || m.Stack.Top() == scrGrep:
+		placeholder = "search every table of " + m.schemaLabel() + " for rows containing this text"
+	case m.Stack.Top() == scrData && m.grid.browse != nil:
+		placeholder = "search all rows of " + m.grid.browse.Table + " on the server, any column (empty clears)"
 	default:
-		m.setStatus("? searches a table, or all tables from the table list; query results: use / or put it in the statement", false)
+		m.SetStatus("? searches a table, or all tables from the table list; query results: use / or put it in the statement", false)
 		return m, nil
 	}
-	m.mode = inputSearch
-	m.input.Prompt = "?"
-	m.input.SetValue("")
-	return m, m.input.Focus()
+	return m, m.prompt.Open(inputSearch, tk.ModeSearch, "?", placeholder, "")
 }
 
 func (m *model) schemaLabel() string {
@@ -132,34 +127,32 @@ func (m *model) schemaLabel() string {
 
 // handlePromptKey serves the / prompt of a script and the ? prompt.
 func (m *model) handlePromptKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	find := m.mode == inputFind
+	find := m.prompt.Kind == inputFind
 	f := &m.script
 	switch msg.String() {
 	case "esc", "ctrl+[":
-		m.mode = inputNone
-		m.input.Blur()
+		m.prompt.Close()
 		if find {
 			f.pattern = m.prevFilter
 			f.Cursor, f.col = m.findFrom.Line, m.findFrom.Col
 		}
 		return m, nil
 	case "enter":
-		m.mode = inputNone
-		m.input.Blur()
+		m.prompt.Close()
 		if !find {
-			return m, m.search(strings.TrimSpace(m.input.Value()))
+			return m, m.search(strings.TrimSpace(m.prompt.Input.Value()))
 		}
 		if f.pattern != "" && len(matchCols(f.lines[f.Cursor], f.pattern)) == 0 {
-			m.setStatus("pattern not found: "+f.pattern, true)
+			m.SetStatus("pattern not found: "+f.pattern, true)
 		}
 		return m, nil
 	}
 	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
+	m.prompt.Input, cmd = m.prompt.Input.Update(msg)
 	if find { // search as you type, from where the search started
-		f.pattern = m.input.Value()
+		f.pattern = m.prompt.Input.Value()
 		f.Cursor, f.col = m.findFrom.Line, m.findFrom.Col
-		f.jump(1, true, m.h-3)
+		f.jump(1, true, m.H-3)
 	}
 	return m, cmd
 }
@@ -167,7 +160,7 @@ func (m *model) handlePromptKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // search runs the ? prompt: one table's rows when a table is open, else
 // every table of the schema.
 func (m *model) search(text string) tea.Cmd {
-	if m.top() == scrData {
+	if m.Stack.Top() == scrData {
 		b := *m.grid.browse
 		b.Search, b.SearchCols = text, m.searchColumns(b.Table, m.grid.res.Columns)
 		return m.browse(b)
@@ -185,27 +178,27 @@ func (m *model) startGrep(text string) tea.Cmd {
 		return nil
 	}
 	if m.colSchema != m.schema || m.colNames == nil {
-		m.setStatus("column names are still loading, try again in a moment", true)
+		m.SetStatus("column names are still loading, try again in a moment", true)
 		return nil
 	}
-	if !m.popTo(scrTables) {
-		m.setStatus("pick a schema first", true)
+	if !m.Stack.PopTo(scrTables) {
+		m.SetStatus("pick a schema first", true)
 		return nil
 	}
 	var tables []string
-	for _, e := range m.tables.all {
+	for _, e := range m.tables.All {
 		tables = append(tables, e.Key)
 	}
-	ctx := m.newOp("searching " + strconv.Itoa(len(tables)) + " tables")
-	gen, conn, schema, cols := op(m.gen), m.conn, m.schema, m.searchCols
-	m.grep, m.grepText, m.grepSeen, m.grepFailed = listState{}, text, 0, 0
-	m.push(scrGrep)
+	ctx, gen := m.Ops.Start("searching " + strconv.Itoa(len(tables)) + " tables")
+	conn, schema, cols := m.conn, m.schema, m.searchCols
+	m.grep, m.grepText, m.grepSeen, m.grepFailed = newList(), text, 0, 0
+	m.Stack.Push(scrGrep)
 
 	ch := make(chan tea.Msg, 8)
 	go func() {
 		defer close(ch)
 		send := func(msg grepMsg) bool {
-			msg.op, msg.ch = gen, ch
+			msg.Op, msg.ch = gen, ch
 			select {
 			case ch <- msg:
 				return true
@@ -236,12 +229,12 @@ func waitFor(ch <-chan tea.Msg) tea.Cmd {
 
 func (m *model) grepResult(msg grepMsg) tea.Cmd {
 	if msg.done {
-		m.done()
-		status := fmt.Sprintf("%q found in %d of %d tables", m.grepText, len(m.grep.all), m.grepSeen)
+		m.Ops.Done()
+		status := fmt.Sprintf("%q found in %d of %d tables", m.grepText, len(m.grep.All), m.grepSeen)
 		if m.grepFailed > 0 {
 			status += fmt.Sprintf(" (%d could not be searched, see log)", m.grepFailed)
 		}
-		m.setStatus(status, false)
+		m.SetStatus(status, false)
 		return nil
 	}
 	m.grepSeen++
@@ -250,12 +243,12 @@ func (m *model) grepResult(msg grepMsg) tea.Cmd {
 		m.grepFailed++
 		slog.Warn("search table", "table", msg.table, "err", msg.err)
 	case msg.n > 0:
-		count := fmtInt(int64(msg.n))
+		count := tk.FmtInt(int64(msg.n))
 		if msg.n >= grepLimit {
 			count += "+"
 		}
-		m.grep.all = append(m.grep.all, entry{Key: msg.table, Name: msg.table, Cols: []string{count}})
-		m.grep.refilter()
+		m.grep.All = append(m.grep.All, entry{Key: msg.table, Name: msg.table, Cols: []string{count}})
+		m.grep.Refilter()
 	}
 	return waitFor(msg.ch)
 }
@@ -284,8 +277,8 @@ var yankFormats = []string{"tsv", "csv", "json", "markdown"}
 // the given format.
 func (m *model) yankRows(format string) tea.Cmd {
 	g := &m.grid
-	if m.top() != scrData && m.top() != scrRow || g.res == nil {
-		m.setStatus("no result on screen to yank", true)
+	if m.Stack.Top() != scrData && m.Stack.Top() != scrRow || g.res == nil {
+		m.SetStatus("no result on screen to yank", true)
 		return nil
 	}
 	if format == "" {
@@ -299,7 +292,7 @@ func (m *model) yankRows(format string) tea.Cmd {
 		}
 	}
 	if !ok {
-		m.setStatus("usage: :yank "+strings.Join(yankFormats, "|"), true)
+		m.SetStatus("usage: :yank "+strings.Join(yankFormats, "|"), true)
 		return nil
 	}
 	from, to := 0, len(g.vis)-1
@@ -312,14 +305,14 @@ func (m *model) yankRows(format string) tea.Cmd {
 		rows = append(rows, g.res.Rows[g.vis[i]])
 	}
 	if len(rows) == 0 {
-		m.setStatus("no rows to yank", false)
+		m.SetStatus("no rows to yank", false)
 		return nil
 	}
 	what := fmt.Sprintf("%d rows as %s", len(rows), format)
 	if len(rows) == 1 {
 		what = "1 row as " + format
 	}
-	return yank(formatRows(g.res.Columns, rows, format), what)
+	return tk.Yank(formatRows(g.res.Columns, rows, format), what)
 }
 
 func formatRows(cols []string, rows [][]db.Cell, format string) string {

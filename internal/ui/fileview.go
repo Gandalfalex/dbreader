@@ -8,12 +8,13 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"dbreader/internal/sqlsafe"
+
+	tk "github.com/Gandalfalex/tuikit"
 	"github.com/Gandalfalex/vim-kit/keys"
 	"github.com/Gandalfalex/vim-kit/motion"
 	"github.com/Gandalfalex/vim-kit/visual"
 	"github.com/charmbracelet/x/ansi"
-
-	"dbreader/internal/sqlsafe"
 )
 
 // fileView is a small modal editor for a SQL script: vim motions, insert
@@ -473,7 +474,7 @@ func (f *fileView) render(w, h int) string {
 		if i == f.Cursor {
 			num = sCrumb
 		}
-		b.WriteString(marker + num.Render(padLeft(strconv.Itoa(i+1), numW)) + "  " + f.renderLine(i, textW))
+		b.WriteString(marker + num.Render(tk.PadLeft(strconv.Itoa(i+1), numW)) + "  " + f.renderLine(i, textW))
 		b.WriteByte('\n')
 	}
 	return b.String()
@@ -481,7 +482,7 @@ func (f *fileView) render(w, h int) string {
 
 // renderLine styles one line: comments muted, selection and cursor marked.
 func (f *fileView) renderLine(i, w int) string {
-	r := []rune(clean(f.lines[i], false))
+	r := []rune(tk.Clean(f.lines[i]))
 	plain := func(s string) string { return s }
 	if strings.HasPrefix(strings.TrimSpace(f.lines[i]), "--") {
 		plain = func(s string) string { return sMuted.Render(s) }

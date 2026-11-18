@@ -18,10 +18,10 @@ func TestTableFilterFindsColumns(t *testing.T) {
 	h.press("/")
 	h.typeText("age") // no table is called that; users has the column
 	h.press("enter")
-	if len(h.m.tables.vis) != 1 {
-		t.Fatalf("visible = %d", len(h.m.tables.vis))
+	if len(h.m.tables.Vis) != 1 {
+		t.Fatalf("visible = %d", len(h.m.tables.Vis))
 	}
-	if e, _ := h.m.tables.current(); e.Name != "users" {
+	if e, _ := h.m.tables.Current(); e.Name != "users" {
 		t.Errorf("found %q, want users", e.Name)
 	}
 }
@@ -36,30 +36,30 @@ func TestGrepAcrossTables(t *testing.T) {
 	p.Commit()
 
 	h.press("?")
-	if h.m.mode != inputSearch {
-		t.Fatalf("mode = %v, status = %q", h.m.mode, h.m.status)
+	if h.m.prompt.Kind != inputSearch {
+		t.Fatalf("mode = %v, status = %q", h.m.prompt.Kind, h.m.Status)
 	}
 	h.typeText("ADA")
 	h.press("enter")
-	if h.m.top() != scrGrep || h.m.loading {
-		t.Fatalf("top = %v, loading = %v, status = %q", h.m.top(), h.m.loading, h.m.status)
+	if h.m.Stack.Top() != scrGrep || h.m.Ops.Loading() {
+		t.Fatalf("top = %v, loading = %v, status = %q", h.m.Stack.Top(), h.m.Ops.Loading(), h.m.Status)
 	}
-	if len(h.m.grep.all) != 2 || !strings.Contains(h.m.status, "2 of 2 tables") {
-		t.Fatalf("hits = %+v, status = %q", h.m.grep.all, h.m.status)
+	if len(h.m.grep.All) != 2 || !strings.Contains(h.m.Status, "2 of 2 tables") {
+		t.Fatalf("hits = %+v, status = %q", h.m.grep.All, h.m.Status)
 	}
 	h.press("enter") // logs
 	g := h.m.grid
-	if h.m.top() != scrData || g.browse.Table != "logs" || len(g.res.Rows) != 1 || g.res.Rows[0][0].S != "ada logged in" {
-		t.Fatalf("top = %v, rows = %+v, status = %q", h.m.top(), g.res, h.m.status)
+	if h.m.Stack.Top() != scrData || g.browse.Table != "logs" || len(g.res.Rows) != 1 || g.res.Rows[0][0].S != "ada logged in" {
+		t.Fatalf("top = %v, rows = %+v, status = %q", h.m.Stack.Top(), g.res, h.m.Status)
 	}
 	h.press("q")
-	if h.m.top() != scrGrep {
-		t.Errorf("top = %v, want the search results again", h.m.top())
+	if h.m.Stack.Top() != scrGrep {
+		t.Errorf("top = %v, want the search results again", h.m.Stack.Top())
 	}
 
 	h.command("grep nobody has this")
-	if h.m.top() != scrGrep || len(h.m.grep.all) != 0 {
-		t.Errorf("hits = %+v", h.m.grep.all)
+	if h.m.Stack.Top() != scrGrep || len(h.m.grep.All) != 0 {
+		t.Errorf("hits = %+v", h.m.grep.All)
 	}
 }
 
@@ -99,13 +99,13 @@ func TestScriptSearch(t *testing.T) {
 	h.press("S", "/")
 	h.typeText("revenue") // in the file, not in its name
 	h.press("enter")
-	if len(h.m.scripts.vis) != 1 {
-		t.Fatalf("visible scripts = %d", len(h.m.scripts.vis))
+	if len(h.m.scripts.Vis) != 1 {
+		t.Fatalf("visible scripts = %d", len(h.m.scripts.Vis))
 	}
 	h.press("enter")
 	f := &h.m.script
-	if h.m.top() != scrScript || f.Cursor != 2 || f.col != 3 {
-		t.Fatalf("top = %v, cursor = %d:%d; want the match on line 3", h.m.top(), f.Cursor, f.col)
+	if h.m.Stack.Top() != scrScript || f.Cursor != 2 || f.col != 3 {
+		t.Fatalf("top = %v, cursor = %d:%d; want the match on line 3", h.m.Stack.Top(), f.Cursor, f.col)
 	}
 
 	// / inside the file: smart-case, n and N wrap around
@@ -169,11 +169,11 @@ func TestYankRows(t *testing.T) {
 		t.Error("selection survived the yank")
 	}
 	h.press("V", "esc")
-	if h.m.grid.selecting || h.m.top() != scrData {
-		t.Errorf("esc: selecting = %v, top = %v", h.m.grid.selecting, h.m.top())
+	if h.m.grid.selecting || h.m.Stack.Top() != scrData {
+		t.Errorf("esc: selecting = %v, top = %v", h.m.grid.selecting, h.m.Stack.Top())
 	}
 	h.command("yank nope")
-	if !h.m.statusErr {
-		t.Errorf("unknown format accepted: %q", h.m.status)
+	if !h.m.StatusErr {
+		t.Errorf("unknown format accepted: %q", h.m.Status)
 	}
 }

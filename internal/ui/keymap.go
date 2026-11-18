@@ -5,6 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	tk "github.com/Gandalfalex/tuikit"
 	"github.com/Gandalfalex/vim-kit/keys"
 	"github.com/Gandalfalex/vim-kit/motion"
 )
@@ -113,7 +114,7 @@ var visualKeymap = keys.MustKeymap(motion.VerticalBindings(), motion.HorizontalB
 	actPrev:       {"N"},
 })
 
-var pagerKeymap = keys.MustKeymap(pagerMotions(), common, keys.Bindings{
+var pagerKeymap = keys.MustKeymap(tk.PagerMotions(), common, keys.Bindings{
 	actBack: {"q", "esc", "h", "left", "backspace", "-"},
 })
 
@@ -128,53 +129,29 @@ func scriptMotions() keys.Bindings {
 	return b
 }
 
-// pagerMotions adds less-style keys to the vim defaults.
-func pagerMotions() keys.Bindings {
-	b := motion.VerticalBindings()
-	b[motion.Down] = append(b[motion.Down], "enter")
-	b[motion.PageDown] = append(b[motion.PageDown], "space")
-	return b
-}
-
 // quitList quits at the top level; deeper in q must be pressed twice so a
 // stray q does not drop the connection.
-func quitList(m *model, _ keys.Event) (tea.Model, tea.Cmd) {
-	if m.top() == scrConns || m.quitArmed {
-		return m, tea.Quit
-	}
-	m.quitArmed = true
-	m.setStatus("press q again to quit (h goes back)", false)
-	return m, nil
-}
+func quitList(m *model, _ keys.Event) (tea.Model, tea.Cmd) { return m, m.Quit(false) }
 
 func (m *model) openFilter(current string) (tea.Model, tea.Cmd) {
-	m.mode = inputFilter
 	m.prevFilter = current
-	m.input.Prompt = "/"
-	m.input.Placeholder = "filter (smart-case; matches any column in a result)"
-	m.input.SetValue(current)
-	m.input.CursorEnd()
-	return m, m.input.Focus()
+	return m, m.prompt.Open(inputFilter, tk.ModeFilter, "/", "filter (smart-case; matches any column in a result)", current)
 }
 
 func (m *model) openSQL() tea.Cmd {
 	if m.conn == nil {
-		m.setStatus("not connected: pick a connection first", true)
+		m.SetStatus("not connected: pick a connection first", true)
 		return nil
 	}
-	m.mode = inputSQL
-	m.input.Prompt = "sql> "
-	m.input.Placeholder = "one statement (tab completes tables and columns · ↑↓ history · writes ask before running)"
-	m.input.SetValue("")
 	m.sqlHist.Open(nil)
 	m.complTail = ""
-	return m.input.Focus()
+	return m.prompt.Open(inputSQL, modeSQL, "sql> ", "one statement (tab completes tables and columns · ↑↓ history · writes ask before running)", "")
 }
 
 // shared are the handlers for the common bindings.
 var shared = map[keys.Action]keyFn{
 	actErrors: do(func(m *model, _ keys.Event) {
-		if m.top() != scrErrors {
+		if m.Stack.Top() != scrErrors {
 			m.openPage(scrErrors, true)
 		}
 	}),
@@ -188,11 +165,11 @@ var shared = map[keys.Action]keyFn{
 var listActions = map[keys.Action]keyFn{
 	actQuit: quitList,
 	actFilter: func(m *model, _ keys.Event) (tea.Model, tea.Cmd) {
-		return m.openFilter(m.list().filter)
+		return m.openFilter(m.list().Filter)
 	},
 	actEsc: func(m *model, _ keys.Event) (tea.Model, tea.Cmd) {
-		if l := m.list(); l.filter != "" {
-			l.setFilter("")
+		if l := m.list(); l.Filter != "" {
+			l.SetFilter("")
 			return m, nil
 		}
 		return m, m.back()
@@ -204,10 +181,10 @@ var listActions = map[keys.Action]keyFn{
 	actPin:    do(func(m *model, _ keys.Event) { m.togglePin() }),
 	// in the script list e opens the script under the cursor in $EDITOR
 	actEdit: func(m *model, _ keys.Event) (tea.Model, tea.Cmd) {
-		if m.top() != scrScripts {
+		if m.Stack.Top() != scrScripts {
 			return m, m.editSQL()
 		}
-		if m.open(); m.top() != scrScript {
+		if m.open(); m.Stack.Top() != scrScript {
 			return m, nil
 		}
 		return m, m.editScript()
@@ -252,10 +229,10 @@ var gridActions = map[keys.Action]keyFn{
 		for i, c := range row {
 			vals[i] = c.S
 		}
-		return m, yank(strings.Join(vals, "\t"), "row")
+		return m, tk.Yank(strings.Join(vals, "\t"), "row")
 	},
 }
 
 var pagerActions = map[keys.Action]keyFn{
-	actBack: do(func(m *model, _ keys.Event) { m.pop() }),
+	actBack: do(func(m *model, _ keys.Event) { m.Stack.Pop() }),
 }

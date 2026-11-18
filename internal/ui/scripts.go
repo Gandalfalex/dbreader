@@ -45,16 +45,16 @@ func (m *model) openScripts() tea.Cmd {
 		rows = append(rows, entry{Key: s.Path, Name: s.Name, Cols: []string{"any connection"}, Dim: true, Text: text(s.Path)})
 	}
 	m.leaveData()
-	if m.top() == scrScript {
-		m.pop() // the list replaces the file; Update saves what was edited
+	if m.Stack.Top() == scrScript {
+		m.Stack.Pop() // the list replaces the file; Update saves what was edited
 	}
-	if !m.popTo(scrScripts) {
-		m.scripts = listState{}
-		m.push(scrScripts)
+	if !m.Stack.PopTo(scrScripts) {
+		m.scripts = newList()
+		m.Stack.Push(scrScripts)
 	}
-	m.scripts.set(rows)
+	m.scripts.Set(rows)
 	if len(rows) == 0 {
-		m.setStatus("no scripts yet: :new <name> starts one", false)
+		m.SetStatus("no scripts yet: :new <name> starts one", false)
 	}
 	return nil
 }
@@ -63,8 +63,8 @@ func (m *model) openScripts() tea.Cmd {
 // the stack.
 func (m *model) leaveData() {
 	m.popPages()
-	if m.top() == scrData {
-		m.pop()
+	if m.Stack.Top() == scrData {
+		m.Stack.Pop()
 	}
 }
 
@@ -99,34 +99,34 @@ func (m *model) openScript(s config.Script) {
 	if m.scriptFile.Path != s.Path {
 		m.keepScript() // the buffer is about to be replaced
 	}
-	if m.top() == scrScript && m.scriptFile.Path == s.Path {
+	if m.Stack.Top() == scrScript && m.scriptFile.Path == s.Path {
 		view.Cursor, view.Top = m.script.Cursor, m.script.Top
 		view.Clamp(len(view.lines))
 		view.col = motion.ClampCol(view.line(), m.script.col)
 		view.reg, view.regLine = m.script.reg, m.script.regLine
 	} else {
-		m.popTo(scrScripts)
-		if m.top() == scrScript {
-			m.pop()
+		m.Stack.PopTo(scrScripts)
+		if m.Stack.Top() == scrScript {
+			m.Stack.Pop()
 		}
-		m.push(scrScript)
+		m.Stack.Push(scrScript)
 	}
 	m.scriptFile, m.script = s, view
-	m.setStatus(fmt.Sprintf("%d lines, %d statements", len(view.lines), len(view.spans)), false)
+	m.SetStatus(fmt.Sprintf("%d lines, %d statements", len(view.lines), len(view.spans)), false)
 }
 
 // runScript executes what :run points at in the script on screen: the
 // visual selection, or the statement under the cursor.
 func (m *model) runScript() tea.Cmd {
-	if m.top() != scrScript {
-		m.setStatus(":run works in a script (S lists them); use s or :sql to type a statement", true)
+	if m.Stack.Top() != scrScript {
+		m.SetStatus(":run works in a script (S lists them); use s or :sql to type a statement", true)
 		return nil
 	}
 	text, _ := m.script.target()
 	m.script.sel.Clear()
 	stmts := sqlsafe.Split(text, m.conn.Dialect())
 	if len(stmts) == 0 {
-		m.setStatus("nothing to run here", true)
+		m.SetStatus("nothing to run here", true)
 		return nil
 	}
 	m.queue, m.queueN = stmts, len(stmts)

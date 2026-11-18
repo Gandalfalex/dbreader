@@ -1,22 +1,16 @@
 package ui
 
 import (
+	"dbreader/internal/db"
+
 	tea "charm.land/bubbletea/v2"
 
-	"dbreader/internal/db"
+	tk "github.com/Gandalfalex/tuikit"
 )
-
-// op tags async results with the generation of the operation that produced
-// them; Update drops results from superseded or cancelled operations.
-type op int
-
-func (o op) opGen() int { return int(o) }
-
-type opResult interface{ opGen() int }
 
 type (
 	connMsg struct {
-		op
+		tk.Op
 		conn    *db.Conn
 		schemas []db.Schema
 		current string // schema unqualified names resolve to
@@ -24,26 +18,26 @@ type (
 		err     error
 	}
 	tablesMsg struct {
-		op
+		tk.Op
 		schema string
 		tables []db.Table
 		err    error
 	}
 	dataMsg struct {
-		op
+		tk.Op
 		res    *db.Result
 		sql    string
 		browse *db.Browse
 		err    error
 	}
 	structMsg struct {
-		op
+		tk.Op
 		table string
 		cols  []db.Column
 		err   error
 	}
 	execMsg struct {
-		op
+		tk.Op
 		pending *db.Pending
 		err     error
 	}
@@ -63,7 +57,7 @@ type (
 		err    error
 	}
 	grepMsg struct {
-		op
+		tk.Op
 		table string
 		n     int
 		err   error
@@ -74,5 +68,4 @@ type (
 		sql string
 		err error
 	}
-	statusMsg string
 )

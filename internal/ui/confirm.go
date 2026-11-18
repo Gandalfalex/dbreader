@@ -5,10 +5,12 @@ import (
 	"log/slog"
 	"strings"
 
+	"dbreader/internal/sqlsafe"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"dbreader/internal/sqlsafe"
+	tk "github.com/Gandalfalex/tuikit"
 )
 
 // confirmState is a non-read statement waiting for the user to type want.
@@ -30,18 +32,13 @@ func (m *model) confirmWord(stmt sqlsafe.Stmt) string {
 
 func (m *model) askConfirm(stmt sqlsafe.Stmt) tea.Cmd {
 	m.confirm = &confirmState{stmt: stmt, want: m.confirmWord(stmt)}
-	m.mode = inputConfirm
-	m.input.Prompt = "type " + m.confirm.want + " › "
-	m.input.Placeholder = ""
-	m.input.SetValue("")
 	slog.Info("confirm asked", "connection", m.conn.Profile.Name, "kind", stmt.Kind.String(), "sql", stmt.Text)
-	return m.input.Focus()
+	return m.prompt.Open(inputConfirm, modeConfirm, "type "+m.confirm.want+" › ", "", "")
 }
 
 func (m *model) closeConfirm() {
 	m.confirm = nil
-	m.mode = inputNone
-	m.input.Blur()
+	m.prompt.Close()
 }
 
 func (m *model) handleConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -49,41 +46,41 @@ func (m *model) handleConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc", "ctrl+[":
 		m.closeConfirm()
 		m.queue = nil
-		m.setStatus("cancelled, nothing was executed", false)
+		m.SetStatus("cancelled, nothing was executed", false)
 		return m, nil
 	case "enter":
 		c := m.confirm
-		typed := strings.TrimSpace(m.input.Value())
+		typed := strings.TrimSpace(m.prompt.Input.Value())
 		m.closeConfirm()
 		// exact match, case included: a habitual "y" or "Yes" must not pass
 		if typed != c.want {
 			m.queue = nil
-			m.setStatus(fmt.Sprintf("not confirmed (expected %q), nothing was executed", c.want), true)
+			m.SetStatus(fmt.Sprintf("not confirmed (expected %q), nothing was executed", c.want), true)
 			return m, nil
 		}
 		slog.Info("confirmed", "connection", m.conn.Profile.Name, "sql", c.stmt.Text)
 		return m, m.exec(c.stmt)
 	}
 	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
+	m.prompt.Input, cmd = m.prompt.Input.Update(msg)
 	return m, cmd
 }
 
 // handlePendingKey is the only key handling while a write waits for its
 // verdict: nothing else may happen with a transaction open.
 func (m *model) handlePendingKey(k string) (tea.Model, tea.Cmd) {
-	if m.loading { // commit or rollback already under way
+	if m.Ops.Loading() { // commit or rollback already under way
 		return m, nil
 	}
 	switch k {
 	case "c":
-		m.loading, m.what = true, "committing"
+		m.Ops.Busy("committing")
 		return m, finish(m.pending, true)
 	case "r":
-		m.loading, m.what = true, "rolling back"
+		m.Ops.Busy("rolling back")
 		return m, finish(m.pending, false)
 	}
-	m.setStatus("transaction open: c commits, r rolls back", true)
+	m.SetStatus("transaction open: c commits, r rolls back", true)
 	return m, nil
 }
 
@@ -123,15 +120,15 @@ func (m *model) renderGuard(h int) string {
 		if pd.Affected == 1 {
 			rows = "row"
 		}
-		add("", fmt.Sprintf("  %s %s affected  %s", sWarn.Bold(true).Render(fmtInt(pd.Affected)), rows,
-			sMuted.Render("· "+fmtDur(pd.Took)+" · locks are held until you decide")))
+		add("", fmt.Sprintf("  %s %s affected  %s", sWarn.Bold(true).Render(tk.FmtInt(pd.Affected)), rows,
+			sMuted.Render("· "+tk.FmtDur(pd.Took)+" · locks are held until you decide")))
 		add("", "  "+sOK.Bold(true).Render("c")+" commit    "+sErr.Bold(true).Render("r")+" roll back")
 	}
 
 	var b strings.Builder
 	for i := range h {
 		if i < len(lines) {
-			b.WriteString(ansi.Truncate(lines[i], m.w, "…"))
+			b.WriteString(ansi.Truncate(lines[i], m.W, "…"))
 		}
 		b.WriteByte('\n')
 	}
@@ -143,7 +140,7 @@ func (m *model) quoteSQL(sql string, maxLines int) []string {
 	maxLines = max(maxLines, 1)
 	bar := sMuted.Render("  ┃ ")
 	var out []string
-	wrapped := strings.Split(ansi.Hardwrap(clean(sql, false), max(10, m.w-6), true), "\n")
+	wrapped := strings.Split(ansi.Hardwrap(tk.Clean(sql), max(10, m.W-6), true), "\n")
 	for i, l := range wrapped {
 		if len(out) == maxLines-1 && i < len(wrapped)-1 {
 			out = append(out, bar+sMuted.Render("…"))

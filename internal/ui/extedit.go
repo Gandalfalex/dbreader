@@ -4,107 +4,41 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
+	tk "github.com/Gandalfalex/tuikit"
 	"github.com/Gandalfalex/vim-kit/motion"
 )
 
-// editorCommand is $VISUAL, else $EDITOR, else vi, split into words.
-func editorCommand() []string {
-	for _, v := range []string{"VISUAL", "EDITOR"} {
-		if f := strings.Fields(os.Getenv(v)); len(f) > 0 {
-			return f
-		}
-	}
-	return []string{"vi"}
-}
-
-// hasEditor reports whether the user named an editor of their own.
-func hasEditor() bool { return os.Getenv("VISUAL") != "" || os.Getenv("EDITOR") != "" }
-
-// editorKind is what dbreader can do with an editor beyond opening a file.
-type editorKind int
-
-const (
-	plainEditor editorKind = iota
-	plusLine               // takes +N to start on line N
-	vim                    // also reports the cursor and completes through an omnifunc
-	nvim                   // like vim, completing through a language server
-)
-
-func kindOf(cmd string) editorKind {
-	switch filepath.Base(cmd) {
-	case "vi", "vim", "view":
-		return vim
-	case "nvim", "nview":
-		return nvim
-	case "nano", "emacs", "micro", "kak":
-		return plusLine
-	}
-	return plainEditor
-}
-
-type scriptEditedMsg struct {
-	path      string
-	line, col int // 1-based cursor the editor was left with, 0 if unknown
-	err       error
-}
-
 // editScript suspends dbreader and opens the script on screen in the
 // user's editor, on the line the cursor is on. Back in dbreader the file is
-// read again and, with vim or neovim, the cursor is where it was left there.
+// read again and, with vim or neovim, the cursor is where it was left there
+// and tables and columns complete in the editor.
 func (m *model) editScript() tea.Cmd {
-	if !m.onStack(scrScript) {
-		m.setStatus("no script open", true)
+	if !m.Stack.Has(scrScript) {
+		m.SetStatus("no script open", true)
 		return nil
 	}
-	m.popTo(scrScript)
+	m.Stack.PopTo(scrScript)
 	if m.script.dirty && !m.saveScript(false) {
 		return nil // the status says why
 	}
-	path, line := m.scriptFile.Path, m.script.Cursor+1
-	args := editorCommand()
-	var dir, spot string // scratch files of a vim session; spot gets the cursor on leaving
 	var load tea.Cmd
-	switch kind := kindOf(args[0]); kind {
-	case vim, nvim:
-		var err error
-		if dir, err = os.MkdirTemp("", "dbreader-edit-*"); err != nil {
-			m.fail("editor", err)
+	edit, err := tk.Edit(m.scriptFile.Path, m.script.Cursor+1, func(kind tk.EditorKind, dir string) []string {
+		args, cmd, err := m.completionSetup(dir, kind == tk.Neovim)
+		if err != nil {
+			slog.Warn("no completion in the editor", "err", err)
 			return nil
 		}
-		spot = filepath.Join(dir, "cursor")
-		args = append(args, "+"+strconv.Itoa(line), "-c",
-			"autocmd VimLeavePre * call writefile([line('.'), col('.'), expand('%:p')], "+vimString(spot)+")")
-		if extra, cmd, err := m.completionSetup(dir, kind == nvim); err != nil {
-			slog.Warn("no completion in the editor", "err", err)
-		} else {
-			args, load = append(args, extra...), cmd
-		}
-	case plusLine:
-		args = append(args, "+"+strconv.Itoa(line))
-	}
-	args = append(args, path)
-	edit := tea.ExecProcess(exec.Command(args[0], args[1:]...), func(err error) tea.Msg {
-		msg := scriptEditedMsg{path: path, err: err}
-		if dir == "" {
-			return msg
-		}
-		defer os.RemoveAll(dir)
-		data, _ := os.ReadFile(spot)
-		f := strings.Split(strings.TrimSpace(string(data)), "\n")
-		if len(f) == 3 && samePath(f[2], path) {
-			msg.line, _ = strconv.Atoi(f[0])
-			msg.col, _ = strconv.Atoi(f[1])
-		}
-		return msg
+		load = cmd
+		return args
 	})
+	if err != nil {
+		m.fail("editor", err)
+		return nil
+	}
 	return tea.Batch(load, edit)
 }
 
@@ -126,14 +60,14 @@ func (m *model) completionSetup(dir string, nvim bool) (args []string, cmd tea.C
 	if ec.base.Columns == nil && m.colsLoading != schema {
 		cmd = m.loadColNames(schema)
 	}
-	setup, src, source := filepath.Join(dir, "init.vim"), fmt.Sprintf(vimSetup, vimString(exe), vimString(ec.path)), "source "
+	setup, src, source := filepath.Join(dir, "init.vim"), fmt.Sprintf(vimSetup, tk.VimString(exe), tk.VimString(ec.path)), "source "
 	if nvim {
-		setup, src, source = filepath.Join(dir, "init.lua"), fmt.Sprintf(nvimSetup, luaString(exe), luaString(ec.path)), "luafile "
+		setup, src, source = filepath.Join(dir, "init.lua"), fmt.Sprintf(nvimSetup, tk.LuaString(exe), tk.LuaString(ec.path)), "luafile "
 	}
 	if err := os.WriteFile(setup, []byte(src), 0o600); err != nil {
 		return nil, nil, err
 	}
-	return []string{"-c", source + vimEscape(setup)}, cmd, nil
+	return []string{"-c", source + tk.VimEscape(setup)}, cmd, nil
 }
 
 // nvimSetup starts the language server for the script's buffer. Without a
@@ -175,63 +109,28 @@ endfunction
 setlocal omnifunc=DbreaderComplete
 `
 
-// vimString quotes s as a vim script string literal.
-func vimString(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
-
-// luaString quotes s as a Lua long string.
-func luaString(s string) string {
-	eq := ""
-	for strings.Contains(s, "]"+eq+"]") {
-		eq += "="
-	}
-	return "[" + eq + "[" + s + "]" + eq + "]"
-}
-
-// vimEscape escapes a file name for an ex command.
-func vimEscape(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if strings.ContainsRune(" \\\t%#|\"", r) {
-			b.WriteByte('\\')
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
-func samePath(a, b string) bool {
-	ra, err1 := filepath.EvalSymlinks(a)
-	rb, err2 := filepath.EvalSymlinks(b)
-	return err1 == nil && err2 == nil && ra == rb
-}
-
-// runeIndex turns vim's 1-based byte column of line into a rune index.
-func runeIndex(line string, byteCol int) int {
-	return utf8.RuneCountInString(line[:max(0, min(byteCol-1, len(line)))])
-}
-
 // scriptEdited re-reads a script after the editor closed.
-func (m *model) scriptEdited(msg scriptEditedMsg) {
+func (m *model) scriptEdited(msg tk.EditedMsg) {
 	m.edCatalog.Store(nil)
-	if msg.err != nil {
-		m.fail("editor", msg.err)
+	if msg.Err != nil {
+		m.fail("editor", msg.Err)
 	}
-	if !m.onStack(scrScript) || m.scriptFile.Path != msg.path {
+	if !m.Stack.Has(scrScript) || m.scriptFile.Path != msg.Path {
 		return
 	}
-	m.popTo(scrScript)
+	m.Stack.PopTo(scrScript)
 	m.openScript(m.scriptFile)
-	if m.top() != scrScript || m.scriptFile.Path != msg.path {
+	if m.Stack.Top() != scrScript || m.scriptFile.Path != msg.Path {
 		return
 	}
 	f := &m.script
-	if msg.line > 0 {
-		f.Cursor = min(msg.line, len(f.lines)) - 1
-		f.col = motion.ClampCol(f.line(), runeIndex(f.line(), msg.col))
+	if msg.Line > 0 {
+		f.Cursor = min(msg.Line, len(f.lines)) - 1
+		f.col = motion.ClampCol(f.line(), msg.Col-1)
 	}
 	f.Clamp(len(f.lines))
-	f.Scroll(len(f.lines), m.h-3)
-	if msg.err == nil {
-		m.setStatus(m.status+" · enter runs the statement under the cursor", false)
+	f.Scroll(len(f.lines), m.H-tk.Chrome)
+	if msg.Err == nil {
+		m.SetStatus(m.Status+" · enter runs the statement under the cursor", false)
 	}
 }

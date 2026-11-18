@@ -1,12 +1,10 @@
 package ui
 
 import (
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/Gandalfalex/vim-kit/cmdline"
 	"github.com/Gandalfalex/vim-kit/keys"
-	"github.com/Gandalfalex/vim-kit/motion"
 )
 
 func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -17,7 +15,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.pending != nil {
 		return m.handlePendingKey(k)
 	}
-	switch m.mode {
+	switch m.prompt.Kind {
 	case inputCommand:
 		return m.handleCommandKey(msg)
 	case inputConfirm:
@@ -27,16 +25,15 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case inputFind, inputSearch:
 		return m.handlePromptKey(msg)
 	}
-	m.setStatus("", false) // messages last until the next key
-	if m.top() == scrScript && m.script.insert {
+	m.SetStatus("", false) // messages last until the next key
+	if m.Stack.Top() == scrScript && m.script.insert {
 		return m.handleInsertKey(msg)
 	}
 
 	// esc cancels in-flight work first
-	if k == "esc" && m.loading && m.cancel != nil {
-		m.cancelOp()
-		m.keys.Reset()
-		m.setStatus("cancelled", false)
+	if k == "esc" && m.cancelOp() {
+		m.Keys.Reset()
+		m.SetStatus("cancelled", false)
 		return m, nil
 	}
 
@@ -44,19 +41,19 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case m.list() != nil:
 		km, actions = listKeymap, listActions
-	case m.top() == scrData:
+	case m.Stack.Top() == scrData:
 		km, actions = gridKeymap, gridActions
-	case m.top() == scrScript && m.script.sel.Active():
+	case m.Stack.Top() == scrScript && m.script.sel.Active():
 		km, actions = visualKeymap, visualActions
-	case m.top() == scrScript:
+	case m.Stack.Top() == scrScript:
 		km, actions = scriptKeymap, editActions
 	}
-	ev, ok := m.keys.Feed(km, k)
+	ev, ok := m.Keys.Feed(km, k)
 	if !ok {
 		return m, nil // count digit or pending g/z
 	}
 	if ev.Action != actQuit {
-		m.quitArmed = false
+		m.Disarm()
 	}
 	if ev.Seq == ":" {
 		return m, m.openCommandLine()
@@ -76,37 +73,34 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *model) move(ev keys.Event) bool {
 	h := m.listHeight()
 	if l := m.list(); l != nil {
-		defer l.scroll(h)
-		return l.Apply(ev, len(l.vis), h)
+		return l.Apply(ev, h)
 	}
-	if m.top() == scrData {
+	if m.Stack.Top() == scrData {
 		g := &m.grid
 		defer g.Scroll(len(g.vis), h)
 		return g.Apply(ev, len(g.vis), h) || g.applyCol(ev)
 	}
-	if m.top() == scrScript {
-		return m.script.apply(ev, m.h-3)
+	if m.Stack.Top() == scrScript {
+		return m.script.apply(ev, m.H-3)
 	}
-	return motion.ApplyPager(pager{&m.vp}, ev)
+	return m.vp.Apply(ev)
 }
 
 func (m *model) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	sql := m.mode == inputSQL
+	sql := m.prompt.Kind == inputSQL
 	switch msg.String() {
 	case "esc", "ctrl+[":
 		m.sqlHist.Close()
 		if !sql {
 			m.applyFilter(m.prevFilter)
 		}
-		m.mode = inputNone
-		m.input.Blur()
+		m.prompt.Close()
 		return m, nil
 	case "enter":
-		m.mode = inputNone
-		m.input.Blur()
+		m.prompt.Close()
 		if sql {
 			m.sqlHist.Close()
-			return m, m.runTyped(m.input.Value())
+			return m, m.runTyped(m.prompt.Input.Value())
 		}
 		return m, nil
 	}
@@ -118,8 +112,8 @@ func (m *model) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				dir = -1
 			}
 			if val, ok := m.sqlHist.Cycle(dir); ok {
-				m.input.SetValue(val)
-				m.input.SetCursor(len([]rune(val)) - len([]rune(m.complTail)))
+				m.prompt.Input.SetValue(val)
+				m.prompt.Input.SetCursor(len([]rune(val)) - len([]rune(m.complTail)))
 			}
 			return m, nil
 		case "up", "down":
@@ -128,21 +122,21 @@ func (m *model) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				dir = -1
 			}
 			if val, ok := m.sqlHist.Recall(dir); ok {
-				m.input.SetValue(val)
-				m.input.CursorEnd()
+				m.prompt.Input.SetValue(val)
+				m.prompt.Input.CursorEnd()
 				m.sqlHist.SetItems(nil)
 			}
 			return m, nil
 		}
 	}
 	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
+	m.prompt.Input, cmd = m.prompt.Input.Update(msg)
 	if sql {
 		var items []cmdline.Item
-		items, m.complTail = completeSQL(m.input.Value(), m.input.Position(), m.sqlCatalog())
+		items, m.complTail = completeSQL(m.prompt.Input.Value(), m.prompt.Input.Position(), m.sqlCatalog())
 		m.sqlHist.SetItems(items)
 	} else {
-		m.applyFilter(m.input.Value())
+		m.applyFilter(m.prompt.Input.Value())
 	}
 	return m, cmd
 }
@@ -151,10 +145,10 @@ func (m *model) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // schema being browsed and their columns, once those have loaded.
 func (m *model) sqlCatalog() sqlCatalog {
 	cat := sqlCatalog{quote: m.conn.Quote, fold: m.conn.Dialect().Fold}
-	for _, e := range m.tables.all {
+	for _, e := range m.tables.All {
 		cat.tables = append(cat.tables, e.Name)
 	}
-	for _, e := range m.schemas.all {
+	for _, e := range m.schemas.All {
 		cat.schemas = append(cat.schemas, e.Name)
 	}
 	if m.colSchema == m.schema {
@@ -166,14 +160,8 @@ func (m *model) sqlCatalog() sqlCatalog {
 // applyFilter filters the list or grid on screen.
 func (m *model) applyFilter(f string) {
 	if l := m.list(); l != nil {
-		l.setFilter(f)
-	} else if m.top() == scrData {
+		l.SetFilter(f)
+	} else if m.Stack.Top() == scrData {
 		m.grid.setFilter(f)
 	}
 }
-
-// pager adapts the bubbles viewport to motion.Pager.
-type pager struct{ *viewport.Model }
-
-func (p pager) Top()    { p.GotoTop() }
-func (p pager) Bottom() { p.GotoBottom() }

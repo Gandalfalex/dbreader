@@ -123,6 +123,15 @@ as does `tcps`. In settings.json: `"driver": "oracle"`, `host`, `port`,
   `ORA-01466`; dbreader retries that automatically.
 - Table row counts come from optimizer statistics and are blank until gathered.
 
+## Layout
+
+dbreader keeps only its own logic. The terminal shell (screen stack,
+lists, prompts, the `:` command line, pager, status line, error log,
+async operations, `$EDITOR`) comes from
+[tuikit](https://github.com/Gandalfalex/tuikit), shared with s3reader and
+gdocker; key bindings and motions from vim-kit. Until tuikit is published,
+`go.mod` points at `../tuikit`.
+
 ## Drivers
 
 Each database server is a driver package under `internal/driver/`, and
