@@ -8,14 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"dbreader/internal/sqlsafe"
 )
 
 func catalogFixture(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "catalog.json")
-	c := catalogFile{Dialect: sqlsafe.Postgres, Quote: `"`,
+	c := catalogFile{Driver: "postgres", Quote: `"`,
 		Tables:  []string{"users", "orders"},
 		Columns: map[string][]string{"users": {"id", "name"}, "orders": {"id", "user_id", "total"}}}
 	if err := c.write(path); err != nil {

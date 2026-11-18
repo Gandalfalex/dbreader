@@ -19,37 +19,17 @@ type sqlCatalog struct {
 	schemas []string
 	columns map[string][]string // table → column names
 	quote   func(string) string
-	fold    foldRule
-}
-
-// foldRule is how a server reads unquoted identifiers, which decides which
-// names need quotes.
-type foldRule int
-
-const (
-	foldNone  foldRule = iota // names are used as written
-	foldLower                 // unquoted names become lower case (PostgreSQL)
-	foldUpper                 // unquoted names become upper case (Oracle)
-)
-
-func foldFor(d sqlsafe.Dialect) foldRule {
-	switch d {
-	case sqlsafe.Postgres:
-		return foldLower
-	case sqlsafe.Oracle:
-		return foldUpper
-	}
-	return foldNone
+	fold    sqlsafe.Fold
 }
 
 // needsQuote reports whether name must be quoted to mean itself.
-func (r foldRule) needsQuote(name string) bool {
+func needsQuote(fold sqlsafe.Fold, name string) bool {
 	switch {
-	case !plainIdent.MatchString(name) && !(r == foldUpper && oracleIdent.MatchString(name)):
+	case !plainIdent.MatchString(name) && !(fold == sqlsafe.FoldUpper && upperIdent.MatchString(name)):
 		return true
-	case r == foldLower:
+	case fold == sqlsafe.FoldLower:
 		return hasUpperRun.MatchString(name)
-	case r == foldUpper:
+	case fold == sqlsafe.FoldUpper:
 		return name != strings.ToUpper(name)
 	}
 	return false
@@ -78,7 +58,7 @@ var (
 	sqlToken    = regexp.MustCompile(`[\pL_][\pL\pN_$]*|[.,]`)
 	plainIdent  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	hasUpperRun = regexp.MustCompile(`[A-Z]`)
-	oracleIdent = regexp.MustCompile(`^[A-Z][A-Z0-9_$#]*$`)
+	upperIdent  = regexp.MustCompile(`^[A-Z][A-Z0-9_$#]*$`)
 )
 
 func isIdentRune(r rune) bool {
@@ -129,7 +109,7 @@ func completeWord(text string, cursor int, cat sqlCatalog) (items []cmdline.Item
 		}
 		seen[name] = true
 		ins := name
-		if !raw && cat.fold.needsQuote(name) {
+		if !raw && needsQuote(cat.fold, name) {
 			ins = cat.quote(name)
 		}
 		items = append(items, cmdline.Item{Value: ins, Label: name, Desc: desc})

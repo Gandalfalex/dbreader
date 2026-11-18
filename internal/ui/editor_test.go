@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"dbreader/internal/driver/sqlite"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,7 +9,6 @@ import (
 	"time"
 
 	"dbreader/internal/config"
-	"dbreader/internal/sqlsafe"
 )
 
 // editorHarness is connected and has a script directory to write to.
@@ -165,7 +165,7 @@ func keysOn(t *testing.T, text string, keys ...string) *harness {
 	h, _ := editorHarness(t)
 	h.command("new scratch")
 	h.press("esc")
-	h.m.script = newFileView(text, sqlsafe.SQLite)
+	h.m.script = newFileView(text, sqlite.SQL)
 	h.m.script.mtime = time.Time{}
 	h.press(keys...)
 	return h

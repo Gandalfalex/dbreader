@@ -14,13 +14,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 
 	"dbreader/internal/config"
+	"dbreader/internal/driver"
 )
 
 // Workspace is what was found in one DBeaver data directory.
@@ -209,48 +209,29 @@ func (ws *Workspace) loadProject(dir string) error {
 	return nil
 }
 
-// profile maps a DBeaver connection to a dbreader profile.
+// profile maps a DBeaver connection to a dbreader profile through the
+// driver that claims its provider.
 func (c connection) profile() (config.Profile, bool) {
 	p := config.Profile{Name: c.Name, Source: "dbeaver", ReadOnly: c.ReadOnly}
-	switch c.Provider {
-	case "postgresql":
-		p.Driver = config.Postgres
-	case "mysql", "mariaDB", "mariadb":
-		p.Driver = config.MySQL
-	case "sqlite":
-		p.Driver = config.SQLite
-	case "oracle":
-		p.Driver = config.Oracle
-	default:
+	d, ok := driver.ForDBeaver(c.Provider)
+	if !ok {
 		return p, false
 	}
+	p.Driver = d.Name()
 	cfg := c.Config
 	p.Host, p.User, p.Database = cfg.Host, cfg.User, cfg.Database
 	p.Port, _ = strconv.Atoi(cfg.Port)
 	p.Protect = cfg.Type == "prod" // DBeaver's "Production" connection type
-	switch {
-	case p.Driver == config.Oracle:
-		props := map[string]string{}
-		for _, m := range []map[string]any{cfg.Provider, cfg.Auth} {
-			for k, v := range m {
-				if str, ok := v.(string); ok {
-					props[strings.ToLower(k)] = str
-				}
+	conn := driver.DBeaverConn{URL: cfg.URL, AuthModel: cfg.AuthModel, Props: map[string]string{}}
+	for _, m := range []map[string]any{cfg.Provider, cfg.Auth} {
+		for k, v := range m {
+			if str, ok := v.(string); ok {
+				conn.Props[strings.ToLower(k)] = str
 			}
 		}
-		oracleTarget(cfg.URL, props, &p)
-		// wallet, Kerberos and OS logins have no password dbreader could use
-		if m := cfg.AuthModel; m != "" && m != "native" && m != "oracle_native" && p.Blocked == "" {
-			p.Blocked = "it logs on with " + m + ", and dbreader only does user and password"
-		}
-	case p.Host == "" && p.Driver != config.SQLite:
-		jdbcURL(cfg.URL, &p)
 	}
-	if p.Driver == config.SQLite {
-		p.Path, p.Database = cfg.Database, ""
-		if p.Path == "" {
-			p.Path = strings.TrimPrefix(cfg.URL, "jdbc:sqlite:")
-		}
+	if !d.FromDBeaver(conn, &p) && p.Host == "" {
+		jdbcURL(cfg.URL, &p)
 	}
 	for name, h := range cfg.Handlers {
 		switch {
@@ -265,99 +246,6 @@ func (c connection) profile() (config.Profile, bool) {
 		}
 	}
 	return p, true
-}
-
-var (
-	oracleThin = regexp.MustCompile(`(?i)^jdbc:oracle:thin:@(?:(tcps?):)?(?://)?([^:/]+|\[[^\]]+\])(?::(\d+))?(?:[/:](.*))?$`)
-	tnsHost    = regexp.MustCompile(`(?i)\(\s*HOST\s*=\s*([^)\s]+)\s*\)`)
-	tnsPort    = regexp.MustCompile(`(?i)\(\s*PORT\s*=\s*(\d+)\s*\)`)
-	tnsService = regexp.MustCompile(`(?i)\(\s*SERVICE_NAME\s*=\s*([^)\s]+)\s*\)`)
-	tnsSID     = regexp.MustCompile(`(?i)\(\s*SID\s*=\s*([^)\s]+)\s*\)`)
-	tnsProto   = regexp.MustCompile(`(?i)\(\s*PROTOCOL\s*=\s*(\w+)\s*\)`)
-)
-
-// oracleTarget reads host, port and service or SID from the JDBC URL, which
-// DBeaver always writes, in whichever form it has:
-//
-//	jdbc:oracle:thin:@//host:1521/SERVICE
-//	jdbc:oracle:thin:@host:1521/SERVICE
-//	jdbc:oracle:thin:@host:1521:SID
-//	jdbc:oracle:thin:@(DESCRIPTION=(ADDRESS=(HOST=h)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=s)))
-//	jdbc:oracle:thin:@ALIAS          resolved through tnsnames.ora
-//
-// props are DBeaver's provider and auth properties, keys lower-cased: they
-// say whether the name is a SID, where tnsnames.ora is, and the logon role.
-func oracleTarget(raw string, props map[string]string, p *config.Profile) {
-	for k, v := range props {
-		switch up := strings.ToUpper(v); {
-		case (strings.Contains(k, "logon") || strings.Contains(k, "role")) && (up == "SYSDBA" || up == "SYSOPER"):
-			p.Role = strings.ToLower(v)
-		}
-	}
-	raw = strings.TrimSpace(raw)
-	at := raw[strings.Index(raw, "@")+1:]
-	isAlias := !strings.ContainsAny(at, ":/(") && at != ""
-
-	if isAlias {
-		tnsDir := ""
-		for k, v := range props {
-			if strings.Contains(k, "tns") && (strings.Contains(k, "path") || strings.Contains(k, "admin")) {
-				tnsDir = v
-			}
-		}
-		desc, ok := lookupTNS(at, tnsDir)
-		if !ok {
-			p.Host, p.Database = "", at
-			p.Blocked = "its TNS alias " + at + " is in no tnsnames.ora dbreader can find (set TNS_ADMIN to the directory holding it)"
-			return
-		}
-		at = desc
-	}
-	if strings.HasPrefix(at, "(") {
-		// several addresses (RAC, failover): the first one is used
-		if m := tnsHost.FindStringSubmatch(at); m != nil {
-			p.Host = m[1]
-		}
-		if m := tnsPort.FindStringSubmatch(at); m != nil {
-			p.Port, _ = strconv.Atoi(m[1])
-		}
-		if m := tnsService.FindStringSubmatch(at); m != nil {
-			p.Database, p.SID = m[1], false
-		} else if m := tnsSID.FindStringSubmatch(at); m != nil {
-			p.Database, p.SID = m[1], true
-		}
-		if m := tnsProto.FindStringSubmatch(at); m != nil && strings.EqualFold(m[1], "tcps") {
-			p.SSLMode = "require"
-		}
-		if p.Host == "" || p.Database == "" {
-			p.Blocked = "its TNS descriptor has no HOST or SERVICE_NAME/SID dbreader can read"
-		}
-		return
-	}
-	m := oracleThin.FindStringSubmatch(raw)
-	if m == nil {
-		// no usable URL: the host, port and database fields, if DBeaver wrote them
-		p.SID = strings.EqualFold(props["@dbeaver-sid-service@"], "SID")
-		if p.Host == "" || p.Database == "" {
-			p.Blocked = "its connection URL (" + raw + ") is not in a form dbreader understands"
-		}
-		return
-	}
-	p.Host = strings.Trim(m[2], "[]")
-	if m[3] != "" {
-		p.Port, _ = strconv.Atoi(m[3])
-	}
-	if strings.EqualFold(m[1], "tcps") {
-		p.SSLMode = "require"
-	}
-	switch rest := m[4]; {
-	case rest == "":
-		p.Blocked = "its URL names no service or SID"
-	case strings.Contains(raw, "@//") || strings.Contains(raw, "/"+rest):
-		p.Database, p.SID = rest, false // host:port/service
-	default:
-		p.Database, p.SID = rest, true // host:port:SID
-	}
 }
 
 // jdbcURL fills host, port and database from "jdbc:postgresql://host:5432/db".

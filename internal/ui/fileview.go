@@ -23,7 +23,7 @@ type fileView struct {
 	lines  []string
 	starts []int          // byte offset of each line in the text
 	spans  []sqlsafe.Span // statements, as byte ranges of the text
-	d      sqlsafe.Dialect
+	d      *sqlsafe.Dialect
 	motion.Window
 	col, left int // cursor column and first visible column, in runes
 	sel       visual.Selection
@@ -48,7 +48,7 @@ type snapshot struct {
 
 const maxUndo = 200
 
-func newFileView(text string, d sqlsafe.Dialect) fileView {
+func newFileView(text string, d *sqlsafe.Dialect) fileView {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	f := fileView{lines: strings.Split(strings.TrimSuffix(text, "\n"), "\n"), d: d}
 	f.reindex()

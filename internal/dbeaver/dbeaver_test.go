@@ -142,7 +142,7 @@ func TestLoad(t *testing.T) {
 	}
 
 	pg := by["shop prod"]
-	if pg.Driver != config.Postgres || pg.Host != "db.example.com" || pg.Port != 5433 || pg.Database != "shop" {
+	if pg.Driver != "postgres" || pg.Host != "db.example.com" || pg.Port != 5433 || pg.Database != "shop" {
 		t.Errorf("postgres target = %+v", pg)
 	}
 	// the password is taken literally: no ${ENV} expansion on DBeaver logins
@@ -157,7 +157,7 @@ func TestLoad(t *testing.T) {
 	}
 
 	my := by["analytics"]
-	if my.Driver != config.MySQL || my.Host != "10.0.0.5" || my.Port != 3307 || my.Database != "stats" {
+	if my.Driver != "mysql" || my.Host != "10.0.0.5" || my.Port != 3307 || my.Database != "stats" {
 		t.Errorf("mysql target from jdbc url = %+v", my)
 	}
 	if my.User != "reader" || my.Password != "pw" || !my.ReadOnly || my.Protect {
@@ -171,14 +171,14 @@ func TestLoad(t *testing.T) {
 		t.Errorf("script dir = %q, want %q", my.ScriptDir, want)
 	}
 
-	if lite := by["local file"]; lite.Driver != config.SQLite || lite.Path != "/data/app.db" || lite.Password != "" {
+	if lite := by["local file"]; lite.Driver != "sqlite" || lite.Path != "/data/app.db" || lite.Password != "" {
 		t.Errorf("sqlite = %+v", lite)
 	}
 	svc := by["ora service"]
-	if svc.Driver != config.Oracle || svc.Host != "ora.example.com" || svc.Port != 1521 || svc.Database != "FREEPDB1" || svc.SID || svc.Blocked != "" {
+	if svc.Driver != "oracle" || svc.Host != "ora.example.com" || svc.Port != 1521 || svc.Database != "FREEPDB1" || svc.SID || svc.Blocked != "" {
 		t.Errorf("oracle service = %+v", svc)
 	}
-	if sid := by["ora sid"]; sid.Driver != config.Oracle || sid.Host != "old" || sid.Port != 1522 || sid.Database != "ORCL" || !sid.SID {
+	if sid := by["ora sid"]; sid.Driver != "oracle" || sid.Host != "old" || sid.Port != 1522 || sid.Database != "ORCL" || !sid.SID {
 		t.Errorf("oracle sid = %+v", sid)
 	}
 	if tns := by["ora tns"]; tns.Host != "secure.example.com" || tns.Port != 2484 || tns.Database != "PROD.example.com" || tns.SID || tns.SSLMode != "require" || tns.Blocked != "" {

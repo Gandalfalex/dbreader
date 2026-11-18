@@ -172,7 +172,7 @@ func testServerSpec(t *testing.T, c *Conn, spec serverSpec) {
 }
 
 func TestPostgres(t *testing.T) {
-	c := serverConn(t, config.Postgres, "DBREADER_TEST_POSTGRES")
+	c := serverConn(t, "postgres", "DBREADER_TEST_POSTGRES")
 	testServer(t, c, "public")
 	// functions with side effects are caught by the server, not the classifier
 	ctx := context.Background()
@@ -194,7 +194,7 @@ func TestPostgres(t *testing.T) {
 
 // TestOracle: DBREADER_TEST_ORACLE=oracle://app:app@localhost:1521/FREEPDB1
 func TestOracle(t *testing.T) {
-	c := serverConn(t, config.Oracle, "DBREADER_TEST_ORACLE")
+	c := serverConn(t, "oracle", "DBREADER_TEST_ORACLE")
 	schema := os.Getenv("DBREADER_TEST_ORACLE_SCHEMA")
 	if schema == "" {
 		schema = "APP"
@@ -214,7 +214,7 @@ func TestOracle(t *testing.T) {
 
 // TestOracleCatalog covers what only Oracle has: synonyms, LONG defaults.
 func TestOracleCatalog(t *testing.T) {
-	c := serverConn(t, config.Oracle, "DBREADER_TEST_ORACLE")
+	c := serverConn(t, "oracle", "DBREADER_TEST_ORACLE")
 	ctx := context.Background()
 	run := func(sql string) error {
 		p, err := c.Exec(ctx, sqlsafe.Classify(sql, c.Dialect()))
@@ -294,5 +294,5 @@ func TestOracleCatalog(t *testing.T) {
 }
 
 func TestMySQL(t *testing.T) {
-	testServer(t, serverConn(t, config.MySQL, "DBREADER_TEST_MYSQL"), "mysql")
+	testServer(t, serverConn(t, "mysql", "DBREADER_TEST_MYSQL"), "mysql")
 }

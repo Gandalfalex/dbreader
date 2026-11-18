@@ -9,6 +9,7 @@ import (
 
 	"dbreader/internal/config"
 	"dbreader/internal/db"
+	"dbreader/internal/driver"
 	"dbreader/internal/sqlsafe"
 )
 
@@ -16,7 +17,7 @@ import (
 // language server (-lsp) and the vim helper (-complete) read it, and
 // loadColNames rewrites it when columns arrive while the editor is open.
 type catalogFile struct {
-	Dialect sqlsafe.Dialect     `json:"dialect"`
+	Driver  string              `json:"driver"`
 	Quote   string              `json:"quote"`
 	Tables  []string            `json:"tables"`
 	Schemas []string            `json:"schemas,omitempty"`
@@ -32,7 +33,7 @@ type editorCatalog struct {
 // catalogFile is what is known of schema so far; Columns is nil until its
 // column names have loaded.
 func (m *model) catalogFile(schema string) catalogFile {
-	c := catalogFile{Dialect: m.conn.Dialect(), Quote: m.conn.QuoteChar()}
+	c := catalogFile{Driver: m.conn.Profile.Driver, Quote: m.conn.QuoteChar()}
 	for _, e := range m.schemas.all {
 		c.Schemas = append(c.Schemas, e.Name)
 	}
@@ -86,9 +87,18 @@ func readCatalog(path string) (catalogFile, error) {
 	return c, err
 }
 
+// dialect is the SQL rules of the catalog's driver; standard SQL for one
+// this build does not have.
+func (c catalogFile) dialect() *sqlsafe.Dialect {
+	if d, ok := driver.Lookup(c.Driver); ok {
+		return d.Dialect()
+	}
+	return &sqlsafe.Dialect{}
+}
+
 func (c catalogFile) catalog() sqlCatalog {
 	return sqlCatalog{
-		tables: c.Tables, schemas: c.Schemas, columns: c.Columns, fold: foldFor(c.Dialect),
+		tables: c.Tables, schemas: c.Schemas, columns: c.Columns, fold: c.dialect().Fold,
 		quote: func(s string) string { return db.QuoteIdent(c.Quote, s) },
 	}
 }
@@ -97,7 +107,7 @@ func (c catalogFile) catalog() sqlCatalog {
 // a whole file, from the statement the cursor is in exactly as the built-in
 // editor does, and returns the column where the word starts.
 func (c catalogFile) completeAt(text string, line, col int) (items []cmdline.Item, start int) {
-	f := newFileView(text, c.Dialect)
+	f := newFileView(text, c.dialect())
 	if line < 0 || line >= len(f.lines) {
 		return nil, col
 	}

@@ -11,6 +11,8 @@ import (
 
 	"dbreader/internal/config"
 	"dbreader/internal/dbeaver"
+	"dbreader/internal/driver"
+	_ "dbreader/internal/driver/all" // the database servers dbreader can open
 	"dbreader/internal/logging"
 	"dbreader/internal/ui"
 )
@@ -70,6 +72,9 @@ func run(cfgFlag, connFlag, dbeaverFlag, logPath string, initFlag bool) error {
 			settings = &config.Settings{} // -init creates it
 		case err != nil:
 			return err
+		}
+		if err := driver.Resolve(settings.Profiles); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
 		}
 	case cfgFlag != "":
 		return pathErr

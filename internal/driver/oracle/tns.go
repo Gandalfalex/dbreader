@@ -1,4 +1,4 @@
-package dbeaver
+package oracle
 
 import (
 	"os"

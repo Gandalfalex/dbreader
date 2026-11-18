@@ -38,12 +38,12 @@ func newHarness(t *testing.T, mod func(*config.Profile)) *harness {
 	}
 	seed.Close()
 
-	p := config.Profile{Name: "testdb", Driver: config.SQLite, Path: path, Limit: 500}
+	p := config.Profile{Name: "testdb", Driver: "sqlite", Path: path, Limit: 500}
 	if mod != nil {
 		mod(&p)
 	}
 	// a second profile keeps the model from auto-connecting in Init
-	s := &config.Settings{Profiles: []config.Profile{p, {Name: "other", Driver: config.SQLite, Path: path}}}
+	s := &config.Settings{Profiles: []config.Profile{p, {Name: "other", Driver: "sqlite", Path: path}}}
 	h := &harness{t: t, m: newModel(s, "")}
 	t.Cleanup(h.m.shutdown)
 	h.m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -338,7 +338,7 @@ func TestServerNavigation(t *testing.T) {
 	if url == "" {
 		t.Skip("DBREADER_TEST_POSTGRES not set")
 	}
-	p := config.Profile{Name: "pg", Driver: config.Postgres, URL: url, Limit: 5}
+	p := config.Profile{Name: "pg", Driver: "postgres", URL: url, Limit: 5}
 	h := &harness{t: t, m: newModel(&config.Settings{Profiles: []config.Profile{p, p}}, "")}
 	t.Cleanup(h.m.shutdown)
 	h.m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -589,7 +589,7 @@ func TestServerOracle(t *testing.T) {
 	if url == "" {
 		t.Skip("DBREADER_TEST_ORACLE not set")
 	}
-	p := config.Profile{Name: "ora", Driver: config.Oracle, URL: url, Limit: 2}
+	p := config.Profile{Name: "ora", Driver: "oracle", URL: url, Limit: 2}
 	h := &harness{t: t, m: newModel(&config.Settings{Profiles: []config.Profile{p, p}}, "")}
 	t.Cleanup(h.m.shutdown)
 	h.m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})

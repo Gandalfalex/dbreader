@@ -10,15 +10,50 @@ import (
 	"unicode"
 )
 
-// Dialect selects the lexical rules that differ between servers.
-type Dialect int
+// Dialect holds the rules that differ between servers. Each driver
+// declares its own; the zero value is plain standard SQL.
+type Dialect struct {
+	NestedComments bool // /* /* */ */ nests (PostgreSQL)
+	DollarQuotes   bool // $tag$ ... $tag$ strings (PostgreSQL)
+	// BackslashEscapes: a backslash escapes the next character in '...' and
+	// "..." (MySQL).
+	BackslashEscapes bool
+	QQuotes          bool // q'[ ... ]' and nq'{ ... }' strings (Oracle)
+	// SlashTerminator: a line holding only "/" ends a statement (SQL*Plus).
+	SlashTerminator bool
+	// Blocks: BEGIN, DECLARE and CREATE FUNCTION|PROCEDURE|PACKAGE|TRIGGER|
+	// TYPE|LIBRARY open a procedural block that may run anything and whose
+	// semicolons do not end it (PL/SQL); it runs to the next "/".
+	Blocks bool
+	// ReadVerbs replaces the verbs that start a read; nil means SELECT,
+	// SHOW, DESCRIBE, DESC, EXPLAIN, VALUES, TABLE, WITH and PRAGMA.
+	ReadVerbs map[string]bool
+	// ImplicitCommit lists verbs the server commits before and after: they
+	// cannot be rolled back and end any open transaction.
+	ImplicitCommit map[string]bool
+	// Fold is how unquoted identifiers are read.
+	Fold Fold
+}
+
+// Fold is how a server reads unquoted identifiers, which decides which
+// names need quotes.
+type Fold int
 
 const (
-	Postgres Dialect = iota
-	MySQL
-	SQLite
-	Oracle
+	FoldNone  Fold = iota // names are used as written
+	FoldLower             // unquoted names become lower case (PostgreSQL)
+	FoldUpper             // unquoted names become upper case (Oracle)
 )
+
+var standard = &Dialect{}
+
+// or returns d, or standard SQL for nil.
+func (d *Dialect) or() *Dialect {
+	if d == nil {
+		return standard
+	}
+	return d
+}
 
 // Kind is how dangerous a statement is, in rising order.
 type Kind int
@@ -53,18 +88,6 @@ var readVerbs = map[string]bool{
 	"VALUES": true, "TABLE": true, "WITH": true, "PRAGMA": true,
 }
 
-// oracleReadVerbs: in Oracle SHOW, DESCRIBE and PRAGMA are not SQL, and
-// EXPLAIN PLAN writes to the plan table.
-var oracleReadVerbs = map[string]bool{"SELECT": true, "WITH": true, "VALUES": true}
-
-// oracleImplicitCommit lists the Oracle statements that commit before and
-// after they run: they cannot be rolled back and end any open transaction.
-var oracleImplicitCommit = map[string]bool{
-	"CREATE": true, "DROP": true, "ALTER": true, "TRUNCATE": true, "RENAME": true,
-	"GRANT": true, "REVOKE": true, "COMMENT": true, "FLASHBACK": true, "PURGE": true,
-	"ANALYZE": true, "AUDIT": true, "NOAUDIT": true, "ASSOCIATE": true, "DISASSOCIATE": true,
-}
-
 // writeWords turn a statement that starts with a read verb into a write
 // when they appear anywhere in it: data-modifying CTEs, SELECT INTO,
 // EXPLAIN ANALYZE DELETE, SELECT ... FOR UPDATE.
@@ -86,7 +109,8 @@ var txVerbs = map[string]bool{
 var noTxVerbs = map[string]bool{"VACUUM": true, "REINDEX": true, "CLUSTER": true}
 
 // Classify inspects a single statement.
-func Classify(sql string, d Dialect) Stmt {
+func Classify(sql string, d *Dialect) Stmt {
+	d = d.or()
 	st := Stmt{Text: strings.TrimSpace(sql)}
 	toks, hint := lex(st.Text, d)
 	if len(toks) == 0 || toks[0].word == "" {
@@ -104,13 +128,13 @@ func Classify(sql string, d Dialect) Stmt {
 	}
 
 	reads := readVerbs
-	if d == Oracle {
-		reads = oracleReadVerbs
+	if d.ReadVerbs != nil {
+		reads = d.ReadVerbs
 	}
 	switch {
-	case d == Oracle && (st.Verb == "BEGIN" || st.Verb == "DECLARE" || isPLSQLUnit(toks)):
+	case d.Blocks && isBlockStart(toks):
 		// anonymous blocks and stored program units can run anything
-		st.Kind, st.Reason = Destructive, "PL/SQL can run any code, including DDL and commits that cannot be rolled back"
+		st.Kind, st.Reason = Destructive, "a procedural block can run any code, including DDL and commits that cannot be rolled back"
 	case hint:
 		// MySQL runs the contents of /*! ... */ comments.
 		st.Kind, st.Reason = Write, "contains an executable comment (/*! ... */)"
@@ -143,11 +167,7 @@ func Classify(sql string, d Dialect) Stmt {
 		st.NoTx = noTxVerbs[st.Verb] || has("CONCURRENTLY") ||
 			(len(toks) > 1 && (st.Verb == "CREATE" || st.Verb == "DROP") &&
 				(toks[1].word == "DATABASE" || toks[1].word == "TABLESPACE"))
-		if d == Oracle && oracleImplicitCommit[st.Verb] {
-			st.NoTx = true
-		}
-		// MySQL commits DDL implicitly, whatever the transaction state.
-		if d == MySQL && (destructiveVerbs[st.Verb] || st.Verb == "CREATE" || st.Verb == "RENAME") {
+		if d.ImplicitCommit[st.Verb] {
 			st.NoTx = true
 		}
 	}
@@ -158,15 +178,16 @@ func Classify(sql string, d Dialect) Stmt {
 // the statement before it to its own terminator (exclusive).
 type Span struct{ Start, End int }
 
-// slash marks a line holding only "/", which ends a statement in Oracle
-// scripts (SQL*Plus convention) and is the only end of a PL/SQL block.
+// slash marks a line holding only "/", which ends a statement under
+// SlashTerminator (SQL*Plus convention) and is the only end of a block.
 const slash = 0x1f
 
 // Spans locates the statements of a script: it is cut at top-level
-// semicolons, and pieces with nothing but comments are dropped. In Oracle a
-// PL/SQL block contains semicolons and runs up to the line with the lone
-// slash instead.
-func Spans(sql string, d Dialect) []Span {
+// semicolons, and pieces with nothing but comments are dropped. A block
+// (Dialect.Blocks) contains semicolons and runs up to the line with the
+// lone slash instead.
+func Spans(sql string, d *Dialect) []Span {
+	d = d.or()
 	var out []Span
 	start := 0
 	var words []token // the statement so far, for block detection
@@ -179,7 +200,7 @@ func Spans(sql string, d Dialect) []Span {
 	scan(sql, d, func(i int, word string, punct byte, _ bool) {
 		switch {
 		case punct == ';':
-			if d == Oracle && isPLSQLStart(words) {
+			if d.Blocks && isBlockStart(words) {
 				return
 			}
 			add(i)
@@ -195,15 +216,15 @@ func Spans(sql string, d Dialect) []Span {
 	return out
 }
 
-// isPLSQLStart reports whether a statement begins a PL/SQL block or a
+// isBlockStart reports whether a statement begins a procedural block or a
 // stored program unit, whose semicolons do not end it.
-func isPLSQLStart(w []token) bool {
-	return len(w) > 0 && (w[0].word == "BEGIN" || w[0].word == "DECLARE" || isPLSQLUnit(w))
+func isBlockStart(w []token) bool {
+	return len(w) > 0 && (w[0].word == "BEGIN" || w[0].word == "DECLARE" || isProgramUnit(w))
 }
 
-// isPLSQLUnit matches CREATE [OR REPLACE] [EDITIONABLE] FUNCTION|PROCEDURE|
+// isProgramUnit matches CREATE [OR REPLACE] [EDITIONABLE] FUNCTION|PROCEDURE|
 // PACKAGE|TRIGGER|TYPE ...
-func isPLSQLUnit(w []token) bool {
+func isProgramUnit(w []token) bool {
 	if len(w) == 0 || w[0].word != "CREATE" {
 		return false
 	}
@@ -220,7 +241,7 @@ func isPLSQLUnit(w []token) bool {
 }
 
 // Split returns the statements of a script, trimmed.
-func Split(sql string, d Dialect) []string {
+func Split(sql string, d *Dialect) []string {
 	var out []string
 	for _, sp := range Spans(sql, d) {
 		out = append(out, strings.TrimSpace(sql[sp.Start:sp.End]))
@@ -228,7 +249,7 @@ func Split(sql string, d Dialect) []string {
 	return out
 }
 
-func lex(sql string, d Dialect) (toks []token, hint bool) {
+func lex(sql string, d *Dialect) (toks []token, hint bool) {
 	scan(sql, d, func(_ int, word string, punct byte, h bool) {
 		if h {
 			hint = true
@@ -241,8 +262,8 @@ func lex(sql string, d Dialect) (toks []token, hint bool) {
 
 // scan walks sql and reports words and punctuation outside of strings,
 // quoted identifiers and comments. hint is set for MySQL executable
-// comments, whose content the server runs.
-func scan(sql string, d Dialect, emit func(pos int, word string, punct byte, hint bool)) {
+// comments, whose content the server runs. d is never nil.
+func scan(sql string, d *Dialect, emit func(pos int, word string, punct byte, hint bool)) {
 	n := len(sql)
 	for i := 0; i < n; {
 		c := sql[i]
@@ -262,19 +283,19 @@ func scan(sql string, d Dialect, emit func(pos int, word string, punct byte, hin
 				case sql[i] == '*' && i+1 < n && sql[i+1] == '/':
 					depth--
 					i += 2
-				case d == Postgres && sql[i] == '/' && i+1 < n && sql[i+1] == '*':
-					depth++ // only PostgreSQL nests block comments
+				case d.NestedComments && sql[i] == '/' && i+1 < n && sql[i+1] == '*':
+					depth++
 					i += 2
 				default:
 					i++
 				}
 			}
 		case c == '\'' || c == '"' || c == '`':
-			i = skipQuoted(sql, i, d == MySQL && c != '`')
-		case c == '/' && d == Oracle && loneSlash(sql, i):
+			i = skipQuoted(sql, i, d.BackslashEscapes && c != '`')
+		case c == '/' && d.SlashTerminator && loneSlash(sql, i):
 			emit(i, "", slash, false)
 			i++
-		case c == '$' && d == Postgres:
+		case c == '$' && d.DollarQuotes:
 			if end, ok := dollarQuote(sql, i); ok {
 				i = end
 			} else {
@@ -285,8 +306,8 @@ func scan(sql string, d Dialect, emit func(pos int, word string, punct byte, hin
 			for j < n && isWordPart(rune(sql[j])) {
 				j++
 			}
-			// Oracle alternative quoting: q'[ ... ]', nq'{ ... }'
-			if w := strings.ToLower(sql[i:j]); d == Oracle && (w == "q" || w == "nq") && j+1 < n && sql[j] == '\'' {
+			// alternative quoting: q'[ ... ]', nq'{ ... }'
+			if w := strings.ToLower(sql[i:j]); d.QQuotes && (w == "q" || w == "nq") && j+1 < n && sql[j] == '\'' {
 				i = skipQQuote(sql, j)
 				continue
 			}

@@ -1,4 +1,4 @@
-package dbeaver
+package oracle
 
 import (
 	"context"
@@ -49,14 +49,14 @@ func TestOracleTargetTNSAlias(t *testing.T) {
 	}
 	for _, tt := range tests {
 		var p config.Profile
-		oracleTarget(tt.url, nil, &p)
+		target(tt.url, nil, &p)
 		if p.Blocked != "" || p.Host != tt.want.Host || p.Port != tt.want.Port || p.Database != tt.want.Database || p.SID != tt.want.SID || p.SSLMode != tt.want.SSLMode {
 			t.Errorf("%s: got %+v", tt.url, p)
 		}
 	}
 
 	var p config.Profile
-	oracleTarget("jdbc:oracle:thin:@NOPE", nil, &p)
+	target("jdbc:oracle:thin:@NOPE", nil, &p)
 	if p.Blocked == "" {
 		t.Errorf("unknown alias not blocked: %+v", p)
 	}
@@ -64,7 +64,7 @@ func TestOracleTargetTNSAlias(t *testing.T) {
 	// DBeaver can name the tnsnames.ora directory itself
 	t.Setenv("TNS_ADMIN", "")
 	p = config.Profile{}
-	oracleTarget("jdbc:oracle:thin:@DEV", map[string]string{"@dbeaver-tns-path@": dir}, &p)
+	target("jdbc:oracle:thin:@DEV", map[string]string{"@dbeaver-tns-path@": dir}, &p)
 	if p.Host != "dev-db.example.com" {
 		t.Errorf("tns path property ignored: %+v", p)
 	}
@@ -72,12 +72,12 @@ func TestOracleTargetTNSAlias(t *testing.T) {
 
 func TestOracleRole(t *testing.T) {
 	var p config.Profile
-	oracleTarget("jdbc:oracle:thin:@//h:1521/s", map[string]string{"@dbeaver-internal-logon@": "SYSDBA", "@dbeaver-sid-service@": "SERVICE"}, &p)
+	target("jdbc:oracle:thin:@//h:1521/s", map[string]string{"@dbeaver-internal-logon@": "SYSDBA", "@dbeaver-sid-service@": "SERVICE"}, &p)
 	if p.Role != "sysdba" || p.SID {
 		t.Errorf("role = %q, sid = %v", p.Role, p.SID)
 	}
 	p = config.Profile{}
-	oracleTarget("jdbc:oracle:thin:@//h:1521/s", map[string]string{"@dbeaver-internal-logon@": "Normal"}, &p)
+	target("jdbc:oracle:thin:@//h:1521/s", map[string]string{"@dbeaver-internal-logon@": "Normal"}, &p)
 	if p.Role != "" {
 		t.Errorf("role = %q for a normal logon", p.Role)
 	}
@@ -95,8 +95,8 @@ func TestOracleAliasConnects(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "tnsnames.ora"), []byte(entry), 0o600)
 	t.Setenv("TNS_ADMIN", dir)
 
-	p := config.Profile{Name: "sys", Driver: config.Oracle, User: "sys", Password: sys}
-	oracleTarget("jdbc:oracle:thin:@localfree", map[string]string{"@dbeaver-internal-logon@": "SYSDBA"}, &p)
+	p := config.Profile{Name: "sys", Driver: Name, User: "sys", Password: sys}
+	target("jdbc:oracle:thin:@localfree", map[string]string{"@dbeaver-internal-logon@": "SYSDBA"}, &p)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	c, err := db.Open(ctx, p)
@@ -132,7 +132,7 @@ func TestOracleTargetURLForms(t *testing.T) {
 	}
 	for _, tt := range tests {
 		var p config.Profile
-		oracleTarget(tt.url, nil, &p)
+		target(tt.url, nil, &p)
 		if p.Blocked != "" || p.Host != tt.host || p.Database != tt.db || p.Port != tt.port || p.SID != tt.sid || p.SSLMode != tt.ssl {
 			t.Errorf("%s: got host=%q db=%q port=%d sid=%v ssl=%q blocked=%q", tt.url, p.Host, p.Database, p.Port, p.SID, p.SSLMode, p.Blocked)
 		}

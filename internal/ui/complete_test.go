@@ -3,6 +3,8 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	"dbreader/internal/sqlsafe"
 )
 
 var testCatalog = sqlCatalog{
@@ -14,7 +16,7 @@ var testCatalog = sqlCatalog{
 		"UserRoles": {"user_id", "role"},
 	},
 	quote: func(s string) string { return `"` + s + `"` },
-	fold:  foldLower,
+	fold:  sqlsafe.FoldLower,
 }
 
 // complete runs completion with the cursor at "|" and returns the labels
@@ -72,17 +74,17 @@ func TestCompleteSQL(t *testing.T) {
 
 func TestNeedsQuote(t *testing.T) {
 	tests := []struct {
-		rule foldRule
+		rule sqlsafe.Fold
 		name string
 		want bool
 	}{
-		{foldLower, "users", false}, {foldLower, "Users", true}, {foldLower, "a b", true},
-		{foldUpper, "USERS", false}, {foldUpper, "USER_ID", false}, {foldUpper, "Users", true},
-		{foldUpper, "users", true}, {foldUpper, "A$B#", false}, {foldUpper, "1ST", true}, {foldUpper, "A B", true},
-		{foldNone, "Users", false}, {foldNone, "a b", true},
+		{sqlsafe.FoldLower, "users", false}, {sqlsafe.FoldLower, "Users", true}, {sqlsafe.FoldLower, "a b", true},
+		{sqlsafe.FoldUpper, "USERS", false}, {sqlsafe.FoldUpper, "USER_ID", false}, {sqlsafe.FoldUpper, "Users", true},
+		{sqlsafe.FoldUpper, "users", true}, {sqlsafe.FoldUpper, "A$B#", false}, {sqlsafe.FoldUpper, "1ST", true}, {sqlsafe.FoldUpper, "A B", true},
+		{sqlsafe.FoldNone, "Users", false}, {sqlsafe.FoldNone, "a b", true},
 	}
 	for _, tt := range tests {
-		if got := tt.rule.needsQuote(tt.name); got != tt.want {
+		if got := needsQuote(tt.rule, tt.name); got != tt.want {
 			t.Errorf("rule %d needsQuote(%q) = %v, want %v", tt.rule, tt.name, got, tt.want)
 		}
 	}

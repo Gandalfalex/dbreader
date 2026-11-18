@@ -64,18 +64,18 @@ func TestInit(t *testing.T) {
 }
 
 func TestOverlay(t *testing.T) {
-	linked := Profile{Name: "db", Driver: Postgres, Host: "h", Port: 5433, Database: "d", User: "u", Password: "p",
+	linked := Profile{Name: "db", Driver: "postgres", Host: "h", Port: 5433, Database: "d", User: "u", Password: "p",
 		Protect: true, Source: "dbeaver", Scripts: []Script{{Name: "a.sql"}}, ScriptDir: "/s"}
 
 	got := Overlay(Profile{Name: "db", ReadOnly: true}, linked)
 	if !got.ReadOnly || got.Protect {
 		t.Errorf("flags come from the settings entry: %+v", got)
 	}
-	if got.Host != "h" || got.Password != "p" || got.Driver != Postgres || len(got.Scripts) != 1 || got.ScriptDir != "/s" {
+	if got.Host != "h" || got.Password != "p" || got.Driver != "postgres" || len(got.Scripts) != 1 || got.ScriptDir != "/s" {
 		t.Errorf("connection must come from the linked profile: %+v", got)
 	}
 
-	got = Overlay(Profile{Name: "db", Driver: Postgres, Host: "other", User: "me", Limit: 10}, linked)
+	got = Overlay(Profile{Name: "db", Driver: "postgres", Host: "other", User: "me", Limit: 10}, linked)
 	if got.Host != "other" || got.Port != 0 || got.User != "me" || got.Password != "p" || got.Limit != 10 {
 		t.Errorf("own target and login win: %+v", got)
 	}

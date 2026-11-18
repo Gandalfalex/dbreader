@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"dbreader/internal/driver/sqlite"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -28,7 +29,7 @@ func testConn(t *testing.T, mod func(*config.Profile)) *Conn {
 	}
 	seed.Close()
 
-	p := config.Profile{Name: "test", Driver: config.SQLite, Path: path}
+	p := config.Profile{Name: "test", Driver: "sqlite", Path: path}
 	if mod != nil {
 		mod(&p)
 	}
@@ -81,7 +82,7 @@ func TestQueryCannotWrite(t *testing.T) {
 		t.Errorf("count = %s after refused writes, want 3", n)
 	}
 	// and the connection must be writable again afterwards
-	p, err := c.Exec(context.Background(), sqlsafe.Classify("DELETE FROM users WHERE id = 1", sqlsafe.SQLite))
+	p, err := c.Exec(context.Background(), sqlsafe.Classify("DELETE FROM users WHERE id = 1", sqlite.SQL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +92,7 @@ func TestQueryCannotWrite(t *testing.T) {
 func TestExecCommitRollback(t *testing.T) {
 	c := testConn(t, nil)
 	ctx := context.Background()
-	stmt := sqlsafe.Classify("DELETE FROM users WHERE id > 1", sqlsafe.SQLite)
+	stmt := sqlsafe.Classify("DELETE FROM users WHERE id > 1", sqlite.SQL)
 
 	p, err := c.Exec(ctx, stmt)
 	if err != nil {
@@ -120,7 +121,7 @@ func TestExecCommitRollback(t *testing.T) {
 
 func TestExecReadOnlyProfile(t *testing.T) {
 	c := testConn(t, func(p *config.Profile) { p.ReadOnly = true })
-	_, err := c.Exec(context.Background(), sqlsafe.Classify("DELETE FROM users", sqlsafe.SQLite))
+	_, err := c.Exec(context.Background(), sqlsafe.Classify("DELETE FROM users", sqlite.SQL))
 	if !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("err = %v, want ErrReadOnly", err)
 	}
@@ -175,7 +176,7 @@ func TestSelectSQL(t *testing.T) {
 
 func TestOpenMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nope.db")
-	if _, err := Open(context.Background(), config.Profile{Driver: config.SQLite, Path: path}); err == nil {
+	if _, err := Open(context.Background(), config.Profile{Driver: "sqlite", Path: path}); err == nil {
 		t.Fatal("opened a missing sqlite file")
 	}
 }

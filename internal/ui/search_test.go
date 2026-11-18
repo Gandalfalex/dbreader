@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"dbreader/internal/driver/sqlite"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,7 +29,7 @@ func TestTableFilterFindsColumns(t *testing.T) {
 func TestGrepAcrossTables(t *testing.T) {
 	h := newHarness(t, nil)
 	h.connect()
-	p, err := h.m.conn.Exec(t.Context(), sqlsafe.Classify("insert into logs values ('ada logged in'), ('nothing')", sqlsafe.SQLite))
+	p, err := h.m.conn.Exec(t.Context(), sqlsafe.Classify("insert into logs values ('ada logged in'), ('nothing')", sqlite.SQL))
 	if err != nil {
 		t.Fatal(err)
 	}

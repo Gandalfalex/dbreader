@@ -123,6 +123,28 @@ as does `tcps`. In settings.json: `"driver": "oracle"`, `host`, `port`,
   `ORA-01466`; dbreader retries that automatically.
 - Table row counts come from optimizer statistics and are blank until gathered.
 
+## Drivers
+
+Each database server is a driver package under `internal/driver/`, and
+`internal/driver/all` imports the built-in ones. A driver implements
+`driver.Driver` (embedding `driver.Base` for the common defaults):
+
+- **connecting**: names and aliases, and the database/sql driver and DSN
+  for a profile;
+- **catalog**: the queries for schemas, tables, columns and column names;
+- **reading safely**: how to open a connection the server keeps from
+  writing, whether the read path must also refuse non-reads
+  (`GuardReads`), which errors a retry fixes;
+- **SQL**: a `sqlsafe.Dialect` with its lexical rules (comments, quoting,
+  statement terminators, procedural blocks), the verbs that read, the
+  statements that commit implicitly, identifier case folding; plus
+  quoting, string literals, row limits and "contains" conditions;
+- **values**: type names and decoding of driver-specific value types.
+
+Optionally it also reads DBeaver connections (`driver.DBeaver`: provider
+ids and the JDBC URL forms). To add a server, write the package and import
+it in `internal/driver/all`; nothing else needs to change.
+
 ## Local test databases
 
 `dev/oracle/` seeds an Oracle Free container (needs about 5 GB of Docker disk):

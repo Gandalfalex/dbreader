@@ -1,4 +1,5 @@
-// Package db talks to PostgreSQL, MySQL and SQLite through database/sql.
+// Package db talks to the database servers the drivers in package driver
+// describe, through database/sql.
 // Reads and writes take separate paths: Query runs inside a read-only
 // transaction the server enforces, Exec opens a transaction the caller must
 // commit or roll back explicitly.
@@ -7,32 +8,26 @@ package db
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
-
-	go_ora "github.com/sijms/go-ora/v2"
 
 	"dbreader/internal/config"
+	"dbreader/internal/driver"
 	"dbreader/internal/sqlsafe"
 )
 
 type Conn struct {
 	Profile config.Profile
 	db      *sql.DB
-	d       dialect
+	d       driver.Driver
+	cat     driver.Catalog
 }
 
 // Cell is one value of a result, already formatted.
-type Cell struct {
-	S    string
-	Null bool
-}
+type Cell = driver.Cell
 
 type Result struct {
 	Columns   []string
@@ -64,15 +59,15 @@ type Column struct {
 
 // Open connects and pings, so a bad profile fails here.
 func Open(ctx context.Context, p config.Profile) (*Conn, error) {
-	d, ok := dialects[p.Driver]
+	d, ok := driver.Lookup(p.Driver)
 	if !ok {
-		return nil, fmt.Errorf("unknown driver %q", p.Driver)
+		return nil, fmt.Errorf("unknown driver %q (%s)", p.Driver, strings.Join(driver.Names(), ", "))
 	}
-	dsn, err := d.dsn(p)
+	name, dsn, err := d.DSN(p)
 	if err != nil {
 		return nil, err
 	}
-	h, err := sql.Open(d.driver, dsn)
+	h, err := sql.Open(name, dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -82,23 +77,35 @@ func Open(ctx context.Context, p config.Profile) (*Conn, error) {
 		h.Close()
 		return nil, err
 	}
-	return &Conn{Profile: p, db: h, d: d}, nil
+	return &Conn{Profile: p, db: h, d: d, cat: d.Catalog()}, nil
 }
 
 func (c *Conn) Close() error { return c.db.Close() }
 
 // Dialect is the lexical dialect for sqlsafe.
-func (c *Conn) Dialect() sqlsafe.Dialect { return c.d.safe }
+func (c *Conn) Dialect() *sqlsafe.Dialect { return c.d.Dialect() }
 
 // HasSchemas reports whether the server has more than one namespace to pick.
-func (c *Conn) HasSchemas() bool { return c.d.schemas != "" }
+func (c *Conn) HasSchemas() bool { return c.cat.Schemas != "" }
 
-// read runs fn on a connection that cannot change data: a READ ONLY
-// transaction on PostgreSQL and MySQL, query_only on SQLite.
+// args are the catalog query arguments: without schemas, no schema.
+func (c *Conn) args(schemaTable ...string) []any {
+	if !c.HasSchemas() {
+		schemaTable = schemaTable[1:]
+	}
+	out := make([]any, len(schemaTable))
+	for i, s := range schemaTable {
+		out[i] = s
+	}
+	return out
+}
+
+// read runs fn on a connection the server keeps from changing data, and
+// repeats it when the driver says the error is passing.
 func (c *Conn) read(ctx context.Context, fn func(q querier) error) error {
 	for attempt := 0; ; attempt++ {
-		err := c.readOnce(ctx, fn)
-		if err == nil || c.d.retry == nil || !c.d.retry(err) || attempt >= 3 {
+		err := c.d.ReadOnly(ctx, c.db, fn)
+		if err == nil || !c.d.Retry(err) || attempt >= 3 {
 			return err
 		}
 		select {
@@ -109,50 +116,12 @@ func (c *Conn) read(ctx context.Context, fn func(q querier) error) error {
 	}
 }
 
-func (c *Conn) readOnce(ctx context.Context, fn func(q querier) error) error {
-	if c.d.queryOnly {
-		conn, err := c.db.Conn(ctx)
-		if err != nil {
-			return err
-		}
-		defer conn.Close()
-		if _, err := conn.ExecContext(ctx, "PRAGMA query_only = ON"); err != nil {
-			return err
-		}
-		defer func() {
-			if _, err := conn.ExecContext(context.WithoutCancel(ctx), "PRAGMA query_only = OFF"); err != nil {
-				// never hand a connection in an unknown state back to the pool
-				_ = conn.Raw(func(any) error { return driver.ErrBadConn })
-			}
-		}()
-		return fn(conn)
-	}
-	var tx *sql.Tx
-	var err error
-	if c.d.readTx != "" { // the driver cannot ask for a read-only transaction
-		if tx, err = c.db.BeginTx(ctx, nil); err == nil {
-			if _, err = tx.ExecContext(ctx, c.d.readTx); err != nil {
-				tx.Rollback()
-			}
-		}
-	} else {
-		tx, err = c.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	}
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	return fn(tx)
-}
-
-type querier interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-}
+type querier = driver.Querier
 
 // Query runs a statement read-only and returns at most limit rows.
 func (c *Conn) Query(ctx context.Context, query string, limit int, args ...any) (*Result, error) {
-	if c.d.guardReads {
-		if st := sqlsafe.Classify(query, c.d.safe); st.Kind != sqlsafe.Read {
+	if c.d.GuardReads() {
+		if st := sqlsafe.Classify(query, c.Dialect()); st.Kind != sqlsafe.Read {
 			return nil, fmt.Errorf("refused on the read path: %s", st.Reason)
 		}
 	}
@@ -173,7 +142,7 @@ func (c *Conn) Query(ctx context.Context, query string, limit int, args ...any) 
 			return err
 		}
 		for _, t := range types {
-			res.Types = append(res.Types, typeName(t.DatabaseTypeName()))
+			res.Types = append(res.Types, c.d.TypeName(t.DatabaseTypeName()))
 		}
 		vals := make([]any, len(res.Columns))
 		ptrs := make([]any, len(vals))
@@ -190,7 +159,7 @@ func (c *Conn) Query(ctx context.Context, query string, limit int, args ...any) 
 			}
 			row := make([]Cell, len(vals))
 			for i, v := range vals {
-				row[i] = format(v, res.Types[i], c.d.dateHasTime)
+				row[i] = driver.Value(c.d, v, res.Types[i])
 			}
 			res.Rows = append(res.Rows, row)
 		}
@@ -263,9 +232,9 @@ func (c *Conn) Schemas(ctx context.Context) ([]Schema, error) {
 	if !c.HasSchemas() {
 		return nil, nil
 	}
-	out, err := c.schemaList(ctx, c.d.schemas)
-	if err != nil && c.d.schemasOld != "" && ctx.Err() == nil {
-		out, err = c.schemaList(ctx, c.d.schemasOld)
+	out, err := c.schemaList(ctx, c.cat.Schemas)
+	if err != nil && c.cat.SchemasOld != "" && ctx.Err() == nil {
+		out, err = c.schemaList(ctx, c.cat.SchemasOld)
 	}
 	return out, err
 }
@@ -295,10 +264,10 @@ func (c *Conn) schemaList(ctx context.Context, query string) ([]Schema, error) {
 
 // CurrentSchema is the schema unqualified names resolve to, "" if unknown.
 func (c *Conn) CurrentSchema(ctx context.Context) string {
-	if c.d.current == "" {
+	if c.cat.Current == "" {
 		return ""
 	}
-	res, err := c.Query(ctx, c.d.current, 1)
+	res, err := c.Query(ctx, c.cat.Current, 1)
 	if err != nil || len(res.Rows) == 0 || len(res.Rows[0]) == 0 {
 		return ""
 	}
@@ -308,7 +277,7 @@ func (c *Conn) CurrentSchema(ctx context.Context) string {
 func (c *Conn) Tables(ctx context.Context, schema string) ([]Table, error) {
 	var out []Table
 	err := c.read(ctx, func(q querier) error {
-		rows, err := q.QueryContext(ctx, c.d.tables, c.d.args(schema)...)
+		rows, err := q.QueryContext(ctx, c.cat.Tables, c.args(schema)...)
 		if err != nil {
 			return err
 		}
@@ -330,7 +299,7 @@ func (c *Conn) Tables(ctx context.Context, schema string) ([]Table, error) {
 func (c *Conn) Columns(ctx context.Context, schema, table string) ([]Column, error) {
 	var out []Column
 	err := c.read(ctx, func(q querier) error {
-		rows, err := q.QueryContext(ctx, c.d.columns, c.d.args(schema, table)...)
+		rows, err := q.QueryContext(ctx, c.cat.Columns, c.args(schema, table)...)
 		if err != nil {
 			return err
 		}
@@ -351,22 +320,22 @@ func (c *Conn) Columns(ctx context.Context, schema, table string) ([]Column, err
 
 // ColumnNames returns the columns of every table in schema, for completion.
 func (c *Conn) ColumnNames(ctx context.Context, schema string) (map[string][]string, error) {
-	return c.columnNames(ctx, c.d.colNames, schema)
+	return c.columnNames(ctx, c.cat.ColNames, schema)
 }
 
 // SearchColumns is ColumnNames without the columns text cannot be searched
 // in, such as LOBs and raw bytes.
 func (c *Conn) SearchColumns(ctx context.Context, schema string) (map[string][]string, error) {
-	if c.d.searchNames == "" {
+	if c.cat.SearchNames == "" {
 		return c.ColumnNames(ctx, schema)
 	}
-	return c.columnNames(ctx, c.d.searchNames, schema)
+	return c.columnNames(ctx, c.cat.SearchNames, schema)
 }
 
 func (c *Conn) columnNames(ctx context.Context, query, schema string) (map[string][]string, error) {
 	out := map[string][]string{}
 	err := c.read(ctx, func(q querier) error {
-		rows, err := q.QueryContext(ctx, query, c.d.args(schema)...)
+		rows, err := q.QueryContext(ctx, query, c.args(schema)...)
 		if err != nil {
 			return err
 		}
@@ -415,11 +384,8 @@ func (c *Conn) SelectSQL(b Browse) string {
 			s.WriteString(" DESC")
 		}
 	}
-	switch {
-	case b.Limit > 0 && c.d.rownum:
-		return "SELECT * FROM (" + s.String() + ") WHERE ROWNUM <= " + strconv.Itoa(b.Limit+1)
-	case b.Limit > 0:
-		s.WriteString(" LIMIT " + strconv.Itoa(b.Limit+1))
+	if b.Limit > 0 {
+		return c.d.Limit(s.String(), b.Limit+1)
 	}
 	return s.String()
 }
@@ -432,18 +398,13 @@ func (c *Conn) SearchCond(cols []string, text string) string {
 	lit := c.Literal("%" + pattern + "%")
 	parts := make([]string, len(cols))
 	for i, col := range cols {
-		parts[i] = fmt.Sprintf(c.d.contains, c.Quote(col), lit)
+		parts[i] = c.d.Contains(c.Quote(col), lit)
 	}
 	return "(" + strings.Join(parts, " OR ") + ")"
 }
 
 // Literal quotes a string value.
-func (c *Conn) Literal(s string) string {
-	if c.d.backslash {
-		s = strings.ReplaceAll(s, "\\", "\\\\")
-	}
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
-}
+func (c *Conn) Literal(s string) string { return c.d.Literal(s) }
 
 // CountMatches counts the rows of a table in which one of cols contains
 // text, stopping at limit.
@@ -451,12 +412,8 @@ func (c *Conn) CountMatches(ctx context.Context, schema, table string, cols []st
 	if len(cols) == 0 {
 		return 0, nil
 	}
-	query := fmt.Sprintf("SELECT count(*) FROM (SELECT 1 FROM %s WHERE %s LIMIT %d) AS m",
-		c.Qualified(schema, table), c.SearchCond(cols, text), limit)
-	if c.d.rownum {
-		query = fmt.Sprintf("SELECT count(*) FROM (SELECT 1 FROM %s WHERE %s AND ROWNUM <= %d)",
-			c.Qualified(schema, table), c.SearchCond(cols, text), limit)
-	}
+	query := "SELECT count(*) FROM (" +
+		c.d.Limit("SELECT 1 FROM "+c.Qualified(schema, table)+" WHERE "+c.SearchCond(cols, text), limit) + ") m"
 	res, err := c.Query(ctx, query, 1)
 	if err != nil {
 		return 0, err
@@ -468,7 +425,7 @@ func (c *Conn) CountMatches(ctx context.Context, schema, table string, cols []st
 func (c *Conn) Quote(ident string) string { return QuoteIdent(c.QuoteChar(), ident) }
 
 // QuoteChar is the character the server quotes identifiers with.
-func (c *Conn) QuoteChar() string { return string(c.d.quote) }
+func (c *Conn) QuoteChar() string { return c.d.Quote() }
 
 // QuoteIdent quotes ident with q, doubling any q inside it.
 func QuoteIdent(q, ident string) string { return q + strings.ReplaceAll(ident, q, q+q) + q }
@@ -478,76 +435,4 @@ func (c *Conn) Qualified(schema, table string) string {
 		return c.Quote(table)
 	}
 	return c.Quote(schema) + "." + c.Quote(table)
-}
-
-func format(v any, typ string, dateHasTime bool) Cell {
-	switch v := v.(type) {
-	case nil:
-		return Cell{Null: true}
-	case go_ora.Clob: // Oracle LOBs arrive as structs
-		return lobCell(v.String, v.Valid)
-	case go_ora.NClob:
-		return lobCell(v.String, v.Valid)
-	case go_ora.Blob:
-		if !v.Valid && v.Data == nil {
-			return Cell{Null: true}
-		}
-		return format(v.Data, typ, dateHasTime)
-	case go_ora.TimeStamp:
-		return format(time.Time(v), "TIMESTAMP", dateHasTime)
-	case go_ora.TimeStampTZ:
-		return format(time.Time(v), "TIMESTAMPTZ", dateHasTime)
-	case go_ora.Number:
-		str, _ := v.String()
-		return Cell{S: str}
-	case []byte:
-		if utf8.Valid(v) {
-			return Cell{S: string(v)}
-		}
-		const maxHex = 64
-		if len(v) > maxHex {
-			return Cell{S: fmt.Sprintf("\\x%s… (%d bytes)", hex.EncodeToString(v[:maxHex]), len(v))}
-		}
-		return Cell{S: "\\x" + hex.EncodeToString(v)}
-	case string:
-		return Cell{S: v}
-	case time.Time:
-		if typ == "DATE" && !dateHasTime {
-			return Cell{S: v.Format("2006-01-02")}
-		}
-		if strings.Contains(typ, "TZ") || strings.Contains(typ, "TIME ZONE") {
-			return Cell{S: v.Format("2006-01-02 15:04:05.999999 Z07:00")}
-		}
-		return Cell{S: v.Format("2006-01-02 15:04:05.999999")}
-	case float64:
-		return Cell{S: strconv.FormatFloat(v, 'g', -1, 64)}
-	case float32:
-		return Cell{S: strconv.FormatFloat(float64(v), 'g', -1, 32)}
-	}
-	return Cell{S: fmt.Sprint(v)}
-}
-
-func lobCell(s string, valid bool) Cell {
-	if !valid && s == "" {
-		return Cell{Null: true}
-	}
-	return Cell{S: s}
-}
-
-// driverTypes maps type names the Oracle driver reports in its own
-// spelling to the ones Oracle users know.
-var driverTypes = map[string]string{
-	"TIMESTAMPDTY": "TIMESTAMP", "TIMESTAMPTZ_DTY": "TIMESTAMP WITH TIME ZONE", "TIMESTAMPLTZ_DTY": "TIMESTAMP WITH LOCAL TIME ZONE",
-	"TIMESTAMPELTZ": "TIMESTAMP WITH LOCAL TIME ZONE", "TIMESTAMPETZ": "TIMESTAMP WITH TIME ZONE",
-	"INTERVALDS_DTY": "INTERVAL DAY TO SECOND", "INTERVALYM_DTY": "INTERVAL YEAR TO MONTH",
-	"IBDOUBLE": "BINARY_DOUBLE", "IBFLOAT": "BINARY_FLOAT", "NCHAR": "VARCHAR2", "LONGVARCHAR": "CLOB",
-	"OCICLOBLOCATOR": "CLOB", "OCIBLOBLOCATOR": "BLOB", "OCIFILELOCATOR": "BFILE", "LONGRAW": "LONG RAW",
-}
-
-func typeName(driver string) string {
-	up := strings.ToUpper(driver)
-	if name, ok := driverTypes[up]; ok {
-		return name
-	}
-	return up
 }

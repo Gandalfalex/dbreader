@@ -12,16 +12,9 @@ import (
 	"strings"
 )
 
-const (
-	Postgres = "postgres"
-	MySQL    = "mysql"
-	SQLite   = "sqlite"
-	Oracle   = "oracle"
-)
-
 type Profile struct {
 	Name     string `json:"name"`
-	Driver   string `json:"driver"`             // postgres, mysql, oracle or sqlite
+	Driver   string `json:"driver"`             // a registered driver: postgres, mysql, oracle, sqlite
 	URL      string `json:"url,omitempty"`      // full connection URL/DSN instead of the fields below; supports ${ENV_VAR}
 	Host     string `json:"host,omitempty"`     // defaults to localhost
 	Port     int    `json:"port,omitempty"`     // defaults to 5432 / 3306
@@ -102,23 +95,10 @@ func Load(path string) (*Settings, error) {
 		if p.Name == "" {
 			p.Name = fmt.Sprintf("profile-%d", i+1)
 		}
-		switch p.Driver = strings.ToLower(p.Driver); p.Driver {
-		case "postgresql", "pg", "pgx":
-			p.Driver = Postgres
-		case "mariadb":
-			p.Driver = MySQL
-		case "sqlite3":
-			p.Driver = SQLite
-		case "oracle_thin", "ora":
-			p.Driver = Oracle
-		case Postgres, MySQL, SQLite, Oracle:
-		case "":
-			// an entry that only sets flags for a linked (DBeaver) connection
-			if p.URL != "" || p.Host != "" || p.Path != "" {
-				return nil, fmt.Errorf("profile %q: driver missing (postgres, mysql, oracle, sqlite)", p.Name)
-			}
-		default:
-			return nil, fmt.Errorf("profile %q: unknown driver %q (postgres, mysql, oracle, sqlite)", p.Name, p.Driver)
+		// the name is checked against the registered drivers by driver.Resolve;
+		// without one the entry only sets flags for a linked (DBeaver) connection
+		if p.Driver == "" && (p.URL != "" || p.Host != "" || p.Path != "") {
+			return nil, fmt.Errorf("profile %q: driver missing", p.Name)
 		}
 		p.URL = expand(p.Name, p.URL)
 		p.Host = expand(p.Name, p.Host)
@@ -183,7 +163,7 @@ func DataDir() string {
 // Target describes where the profile points, without credentials.
 func (p Profile) Target() string {
 	switch {
-	case p.Driver == SQLite:
+	case p.Path != "": // a database file
 		return p.Path
 	case p.URL != "":
 		return "(url)"

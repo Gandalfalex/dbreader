@@ -1,6 +1,12 @@
-package sqlsafe
+package sqlsafe_test
 
 import (
+	. "dbreader/internal/sqlsafe"
+
+	"dbreader/internal/driver/mysql"
+	"dbreader/internal/driver/oracle"
+	"dbreader/internal/driver/postgres"
+	"dbreader/internal/driver/sqlite"
 	"reflect"
 	"testing"
 )
@@ -8,57 +14,57 @@ import (
 func TestClassify(t *testing.T) {
 	tests := []struct {
 		sql  string
-		d    Dialect
+		d    *Dialect
 		want Kind
 	}{
-		{"select * from users", Postgres, Read},
-		{"  SELECT 1 -- delete from users", Postgres, Read},
-		{"select 'drop table x', \"update\" from t", Postgres, Read},
-		{"select /* delete */ 1", Postgres, Read},
-		{"select /* a /* nested */ delete */ 1", Postgres, Read},
-		{"select $$ delete from t $$", Postgres, Read},
-		{"select $tag$ drop $tag$, $1", Postgres, Read},
-		{"select `delete` from t", MySQL, Read},
-		{`select 'it\'s; delete from t'`, MySQL, Read},
-		{"show tables", MySQL, Read},
-		{"explain select 1", Postgres, Read},
-		{"explain analyze select 1", Postgres, Read},
-		{"with a as (select 1) select * from a", Postgres, Read},
-		{"values (1), (2)", Postgres, Read},
-		{"pragma table_info", SQLite, Read},
-		{"select replace(name, 'a', 'b') from t", MySQL, Read},
+		{"select * from users", postgres.SQL, Read},
+		{"  SELECT 1 -- delete from users", postgres.SQL, Read},
+		{"select 'drop table x', \"update\" from t", postgres.SQL, Read},
+		{"select /* delete */ 1", postgres.SQL, Read},
+		{"select /* a /* nested */ delete */ 1", postgres.SQL, Read},
+		{"select $$ delete from t $$", postgres.SQL, Read},
+		{"select $tag$ drop $tag$, $1", postgres.SQL, Read},
+		{"select `delete` from t", mysql.SQL, Read},
+		{`select 'it\'s; delete from t'`, mysql.SQL, Read},
+		{"show tables", mysql.SQL, Read},
+		{"explain select 1", postgres.SQL, Read},
+		{"explain analyze select 1", postgres.SQL, Read},
+		{"with a as (select 1) select * from a", postgres.SQL, Read},
+		{"values (1), (2)", postgres.SQL, Read},
+		{"pragma table_info", sqlite.SQL, Read},
+		{"select replace(name, 'a', 'b') from t", mysql.SQL, Read},
 
-		{"insert into t values (1)", Postgres, Write},
-		{"update t set a = 1 where id = 2", Postgres, Write},
-		{"delete from t where id = 2", Postgres, Write},
-		{"with d as (delete from t where id = 1 returning *) select * from d", Postgres, Write},
-		{"select * into backup from t", Postgres, Write},
-		{"select * from t for update", Postgres, Write},
-		{"explain analyze delete from t where id = 1", Postgres, Write},
-		{"create table t (a int)", Postgres, Write},
-		{"replace into t values (1)", MySQL, Write},
-		{"call cleanup()", MySQL, Write},
-		{"select 1 /*! ; delete from t */", MySQL, Write},
-		{"pragma journal_mode = wal", SQLite, Write},
-		{"pragma wal_checkpoint(full)", SQLite, Write},
-		{"grant all on t to bob", Postgres, Write},
-		{"set search_path = x", Postgres, Write},
-		{"vacuum", Postgres, Write},
-		{"frobnicate everything", Postgres, Write},
-		{"(((", Postgres, Write},
-		{"", Postgres, Write},
+		{"insert into t values (1)", postgres.SQL, Write},
+		{"update t set a = 1 where id = 2", postgres.SQL, Write},
+		{"delete from t where id = 2", postgres.SQL, Write},
+		{"with d as (delete from t where id = 1 returning *) select * from d", postgres.SQL, Write},
+		{"select * into backup from t", postgres.SQL, Write},
+		{"select * from t for update", postgres.SQL, Write},
+		{"explain analyze delete from t where id = 1", postgres.SQL, Write},
+		{"create table t (a int)", postgres.SQL, Write},
+		{"replace into t values (1)", mysql.SQL, Write},
+		{"call cleanup()", mysql.SQL, Write},
+		{"select 1 /*! ; delete from t */", mysql.SQL, Write},
+		{"pragma journal_mode = wal", sqlite.SQL, Write},
+		{"pragma wal_checkpoint(full)", sqlite.SQL, Write},
+		{"grant all on t to bob", postgres.SQL, Write},
+		{"set search_path = x", postgres.SQL, Write},
+		{"vacuum", postgres.SQL, Write},
+		{"frobnicate everything", postgres.SQL, Write},
+		{"(((", postgres.SQL, Write},
+		{"", postgres.SQL, Write},
 
-		{"delete from t", Postgres, Destructive},
-		{"update t set a = 1", Postgres, Destructive},
-		{"update t set a = 'where'", Postgres, Destructive},
-		{"drop table t", Postgres, Destructive},
-		{"truncate t", Postgres, Destructive},
-		{"alter table t drop column a", Postgres, Destructive},
+		{"delete from t", postgres.SQL, Destructive},
+		{"update t set a = 1", postgres.SQL, Destructive},
+		{"update t set a = 'where'", postgres.SQL, Destructive},
+		{"drop table t", postgres.SQL, Destructive},
+		{"truncate t", postgres.SQL, Destructive},
+		{"alter table t drop column a", postgres.SQL, Destructive},
 
-		{"begin", Postgres, TxControl},
-		{"commit", Postgres, TxControl},
-		{"rollback", Postgres, TxControl},
-		{"start transaction", MySQL, TxControl},
+		{"begin", postgres.SQL, TxControl},
+		{"commit", postgres.SQL, TxControl},
+		{"rollback", postgres.SQL, TxControl},
+		{"start transaction", mysql.SQL, TxControl},
 	}
 	for _, tt := range tests {
 		if got := Classify(tt.sql, tt.d); got.Kind != tt.want {
@@ -70,15 +76,15 @@ func TestClassify(t *testing.T) {
 func TestClassifyNoTx(t *testing.T) {
 	tests := []struct {
 		sql  string
-		d    Dialect
+		d    *Dialect
 		want bool
 	}{
-		{"vacuum full", Postgres, true},
-		{"create index concurrently i on t (a)", Postgres, true},
-		{"create database x", Postgres, true},
-		{"drop table t", Postgres, false},
-		{"drop table t", MySQL, true},
-		{"update t set a = 1 where b = 2", MySQL, false},
+		{"vacuum full", postgres.SQL, true},
+		{"create index concurrently i on t (a)", postgres.SQL, true},
+		{"create database x", postgres.SQL, true},
+		{"drop table t", postgres.SQL, false},
+		{"drop table t", mysql.SQL, true},
+		{"update t set a = 1 where b = 2", mysql.SQL, false},
 	}
 	for _, tt := range tests {
 		if got := Classify(tt.sql, tt.d).NoTx; got != tt.want {
@@ -100,7 +106,7 @@ func TestSplit(t *testing.T) {
 		{"", nil},
 	}
 	for _, tt := range tests {
-		if got := Split(tt.sql, Postgres); !reflect.DeepEqual(got, tt.want) {
+		if got := Split(tt.sql, postgres.SQL); !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("Split(%q) = %q, want %q", tt.sql, got, tt.want)
 		}
 	}
@@ -108,7 +114,7 @@ func TestSplit(t *testing.T) {
 
 func TestSpans(t *testing.T) {
 	sql := "-- a\nselect 1;\n\n-- only a comment\n;\ndelete from t\n"
-	spans := Spans(sql, Postgres)
+	spans := Spans(sql, postgres.SQL)
 	if len(spans) != 2 {
 		t.Fatalf("spans = %v", spans)
 	}
@@ -162,7 +168,7 @@ func TestClassifyOracle(t *testing.T) {
 		{"savepoint a", TxControl, false},
 	}
 	for _, tt := range tests {
-		got := Classify(tt.sql, Oracle)
+		got := Classify(tt.sql, oracle.SQL)
 		if got.Kind != tt.want || got.NoTx != tt.noTx {
 			t.Errorf("Classify(%q) = %v noTx=%v (%s), want %v noTx=%v", tt.sql, got.Kind, got.NoTx, got.Reason, tt.want, tt.noTx)
 		}
@@ -190,12 +196,12 @@ func TestSplitOracle(t *testing.T) {
 		{"slash in a comment", "select 1 from dual -- ok\n-- /\n;", []string{"select 1 from dual -- ok\n-- /"}},
 	}
 	for _, tt := range tests {
-		if got := Split(tt.sql, Oracle); !reflect.DeepEqual(got, tt.want) {
+		if got := Split(tt.sql, oracle.SQL); !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%s:\n got %q\nwant %q", tt.name, got, tt.want)
 		}
 	}
 	// other dialects are unaffected: begin is a transaction, / is division
-	if got := Split("begin; select 4\n/ 2;", Postgres); len(got) != 2 {
+	if got := Split("begin; select 4\n/ 2;", postgres.SQL); len(got) != 2 {
 		t.Errorf("postgres split = %q", got)
 	}
 }
